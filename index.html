@@ -7735,6 +7735,13 @@ const Cloud = {
     if (!r.ok) throw new Error((j && (j.message || j.hint)) || ("Cloud error " + r.status));
     return j;
   },
+  async changePassword(pw){
+    const c = this.cfg(), sess = this.sess();
+    const r = await fetch(c.url.replace(/\/+$/, "") + "/auth/v1/user", {method: "PUT", headers: {apikey: c.key, Authorization: "Bearer " + sess.access_token, "Content-Type": "application/json"}, body: JSON.stringify({password: pw})});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.msg || j.message || j.error_description || ("Could not change the password (" + r.status + ")"));
+    return true;
+  },
   async whoAmI(){
     const rows = await this.api("members?select=user_id,firm_id,name,email,role,active");
     const me = (rows || []).find(m => m.user_id === (this.sess() || {}).user_id) || (rows || [])[0];
@@ -7948,8 +7955,8 @@ function viewCloudSettings(){
   let h = '<div class="pane"><h2>Firm account (shared data)</h2>';
   if (!Cloud.on()){
     h += '<p class="note" style="margin:0 0 10px">Sign in to share clients, bills, bank statements and sales invoices with the rest of the firm. Without signing in, everything stays on this computer only.</p>' +
-      '<div class="grid"><label class="f"><span>Email</span><input type="email" data-cloud="email" value="' + esc(c.email || "") + '" autocomplete="username"></label>' +
-      '<label class="f"><span>Password</span><input type="password" data-cloud="password" data-fk="cloudpw" autocomplete="current-password"></label></div>' +
+      '<div class="grid"><label class="f"><span>Email</span><input type="email" data-cloud="email" data-fk="cloudemail" value="' + esc((S.cloudForm && S.cloudForm.email) || c.email || "") + '" autocomplete="username"></label>' +
+      '<label class="f"><span>Password</span><input type="password" data-cloud="password" data-fk="cloudpw" value="' + esc((S.cloudForm && S.cloudForm.password) || "") + '" autocomplete="current-password"></label></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn small primary" data-act="cloudSignIn">Sign in</button></div>' +
       (st.error ? '<p class="bk-warn" style="margin-top:10px">' + esc(st.error) + "</p>" : "");
     return h + "</div>";
@@ -7959,6 +7966,9 @@ function viewCloudSettings(){
   if (st.error) h += '<p class="bk-warn">' + esc(st.error) + "</p>";
   h += '<label class="chk"><input type="checkbox" data-cloud="auto"' + (c.auto !== false ? " checked" : "") + "> Keep in sync automatically (every 45 seconds)</label>" +
     '<div class="row" style="margin-top:10px"><button class="btn small primary" data-act="cloudSync"' + (st.busy ? " disabled" : "") + ">" + (st.busy ? "Syncing\u2026" : "Sync now") + '</button><button class="btn small" data-act="cloudSignOut">Sign out</button></div>';
+  h += '<h3 style="margin:14px 0 4px;font-size:15px">Change password</h3><div class="grid"><label class="f"><span>New password (8 characters or more)</span><input type="password" data-cloud="newpw" data-fk="cloudnewpw" autocomplete="new-password"></label>' +
+    '<label class="f"><span>Repeat it</span><input type="password" data-cloud="newpw2" data-fk="cloudnewpw2" autocomplete="new-password"></label></div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn small" data-act="cloudPassword">Change password</button></div>';
   if ((st.members || []).length) h += '<h3 style="margin:14px 0 4px;font-size:15px">People in the firm</h3><table class="data"><thead><tr><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody>' +
     st.members.map(m => "<tr><td>" + esc(m.name || "\u2014") + "</td><td>" + esc(m.email) + "</td><td>" + esc(m.role) + (m.active ? "" : " (off)") + "</td></tr>").join("") + "</tbody></table>";
   return h + "</div>";
@@ -8279,11 +8289,20 @@ document.addEventListener("click", ev => {
       const email = em ? em.value.trim() : "", pass = pw ? pw.value : "";
       if (!email || !pass){ toast("Enter your email and password."); break; }
       Cloud.st.busy = "Signing in\u2026"; Cloud.st.error = ""; render();
-      Cloud.signIn(email, pass).then(() => { Cloud.st.busy = ""; toast("Signed in as " + email + "."); startCloudSync(); render(); },
+      Cloud.signIn(email, pass).then(() => { Cloud.st.busy = ""; S.cloudForm = null; toast("Signed in as " + email + "."); startCloudSync(); render(); },
         err => { Cloud.st.busy = ""; Cloud.st.error = err.message; render(); });
       break;
     }
     case "cloudSync": cloudSync(true); break;
+    case "cloudPassword": {
+      const a = document.querySelector('[data-cloud="newpw"]'), b2 = document.querySelector('[data-cloud="newpw2"]');
+      const pw = a ? a.value : "", pw2 = b2 ? b2.value : "";
+      if (pw.length < 8){ toast("Use at least 8 characters."); break; }
+      if (pw !== pw2){ toast("The two passwords are not the same."); break; }
+      Cloud.changePassword(pw).then(() => { if (a) a.value = ""; if (b2) b2.value = ""; toast("Password changed. Use it next time you sign in."); },
+        err => toast(err.message));
+      break;
+    }
     case "cloudSignOut": {
       askConfirm({title: "Sign out of the firm account?", ok: "Sign out", body: "This computer keeps its own copy of everything. Changes made after signing out are not shared until you sign in again."}).then(a => {
         if (!a) return;
@@ -8415,6 +8434,7 @@ document.addEventListener("keydown", ev => {
 
 document.addEventListener("input", ev => {
   const t = ev.target;
+  if (t && t.dataset && (t.dataset.cloud === "email" || t.dataset.cloud === "password")){ S.cloudForm = Object.assign({}, S.cloudForm, {[t.dataset.cloud]: t.value}); }
   if (S.view === "company" && S.tab === "bank" && bankInput(t)) return;
   if (S.view === "company" && S.tab === "sales" && salesInput(t)) return;
   if (t.id === "swq"){ S.switcher.q = t.value; S.switcher.idx = 0; renderSwitcher(); return; }
@@ -8452,7 +8472,9 @@ function setPath(o, path, v){ const k = path.split("."); if (k.length === 2) o[k
 
 document.addEventListener("change", ev => {
   const t = ev.target, e = curEntry(), cid = S.coId;
-  if (t.dataset && t.dataset.cloud){ const k = t.dataset.cloud; if (k === "auto"){ Cloud.setCfg({auto: t.checked}); startCloudSync(); } else if (k === "email") Cloud.setCfg({email: t.value.trim()}); return; }
+  if (t.dataset && t.dataset.cloud){
+    const k = t.dataset.cloud;
+    if (k === "email" || k === "password"){ S.cloudForm = Object.assign({}, S.cloudForm, {[k]: t.value}); } if (k === "auto"){ Cloud.setCfg({auto: t.checked}); startCloudSync(); } else if (k === "email") Cloud.setCfg({email: t.value.trim()}); return; }
   if (t.dataset && t.dataset.bridge){ const k = t.dataset.bridge; Bridge.setCfg({[k]: t.type === "checkbox" ? t.checked : t.value.trim()}); if (k !== "follow"){ Bridge.lastOpenKey = null; startBridgePolling(); } return; }
   if (t.dataset && t.dataset.bridgelink !== undefined){ const c = S.companies[t.value]; if (c){ c.tallyName = t.dataset.bridgelink; Store.saveCompany(c); Bridge.lastOpenKey = null; toast(c.name + " is linked to the Tally company " + c.tallyName + "."); bridgeTick(false); render(); } return; }
   if (t.hasAttribute && t.hasAttribute("data-picktally")){ const co = CO(); if (co && t.value){ co.tallyName = t.value; Store.saveCompany(co); Bridge.lastOpenKey = null; render(); } return; }
