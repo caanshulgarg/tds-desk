@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.6.0'
+$BridgeVersion = '1.7.0'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -667,6 +667,7 @@ function Invoke-Import($payload) {
       if (-not $hit -and $r.lastVchId) { foreach ($h in $heads) { if ($h.masterId -eq $r.lastVchId) { $hit = $h; break } } }
       if ($hit) {
         $r['verified'] = $true; $r['optional'] = ([string]$hit.optional -match '^yes$'); $r['vchNumber'] = [string]$hit.number; $r['vchType'] = [string]$hit.type
+        $r['guid'] = [string]$hit.guid; $r['masterId'] = [string]$hit.masterId; $r['vchDate'] = [string]$hit.date
       } elseif (@($heads).Count -gt 0) {
         $r['verified'] = $false
         $r.ok = $false
@@ -815,6 +816,29 @@ function Invoke-Client($client) {
       '/readtest' { $result = Invoke-ReadTest $qs['company'] ([int]('0' + $qs['port'])) }
       '/ledgers' { $result = Get-Ledgers $qs['company'] ([int]('0' + $qs['port'])) }
       '/vouchers' { $result = Get-Vouchers $qs['company'] $qs['from'] $qs['to'] $qs['ledger'] $qs['types'] ([int]('0' + $qs['port'])) }
+      '/unpost' {
+        $bodyObj = $body | ConvertFrom-Json
+        $company = [string]$bodyObj.company
+        $port = Find-CompanyPort $company ([int]('0' + $qs['port']))
+        $guid = [string]$bodyObj.guid
+        $vtype = [string]$bodyObj.vchType
+        $vdate = [string]$bodyObj.vchDate
+        if (-not $guid) { $result = [ordered]@{ ok = $false; error = 'This entry has no Tally identity stored, so it cannot be removed automatically. Delete it in Tally.' } }
+        else {
+          $x = '<VOUCHER REMOTEID="' + (Esc $guid) + '" VCHTYPE="' + (Esc $vtype) + '" ACTION="Delete">' +
+               '<DATE>' + (Esc $vdate) + '</DATE><VOUCHERTYPENAME>' + (Esc $vtype) + '</VOUCHERTYPENAME></VOUCHER>'
+          $env2 = '<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME>' +
+                  '<STATICVARIABLES><SVCURRENTCOMPANY>' + (Esc $company) + '</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>' +
+                  '<TALLYMESSAGE xmlns:UDF="TallyUDF">' + $x + '</TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
+          try {
+            $raw = Invoke-Tally -TallyPort $port -Xml $env2
+            $res = Read-ImportResult $raw
+            $gone = ($raw -match '<DELETED>\s*1') -or $res.ok
+            Write-Log ("Unpost " + $guid + " from '" + $company + "': " + $(if ($gone) { 'removed' } else { 'FAILED ' + $res.message }))
+            $result = [ordered]@{ ok = [bool]$gone; company = $company; port = $port; message = $res.message }
+          } catch { $result = [ordered]@{ ok = $false; error = 'Tally did not answer: ' + $_.Exception.Message } }
+        }
+      }
       '/import' {
         if ($method -ne 'POST') { throw 'Use POST.' }
         $result = Invoke-Import ($body | ConvertFrom-Json)
