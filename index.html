@@ -283,6 +283,9 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .signin-box .f{display:block}
 .signin-box .f span{display:block;font-size:13px;color:var(--muted);margin-bottom:3px}
 .signin-box input{width:100%;height:38px;border:1px solid var(--rule);border-radius:7px;padding:0 10px;font:inherit;background:var(--paper);color:var(--ink)}
+.itembox{margin:10px 0;border:1px solid var(--rule);border-radius:8px;background:var(--sheet);padding:8px 10px}
+.itembox summary{cursor:pointer;font-weight:600;font-size:14px}
+.itembox .data{font-size:13px;margin-top:6px}
 .setupcard{margin-top:14px;padding:12px 14px;border:1px solid var(--rule);border-radius:8px;background:var(--sheet)}
 ol.setup{margin:6px 0 0 18px;padding:0;line-height:1.6}
 ol.setup li{margin:6px 0}
@@ -540,7 +543,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 51 (what one client teaches, every client uses)";
+const APP_VERSION = "18 Sep 2026 · build 52 (bills read line by line)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -1301,6 +1304,7 @@ function compute(e, cid){
   const tds = skip ? 0 : tdsWould;
   if (skip) flags.push({lvl:"info", t:"TDS of " + money(tdsWould) + " applies but is not booked in this entry: " + skipText(skip) + ". The party is credited with the full amount."});
 
+  try { itemChecks(e.x).forEach(c => flags.push({lvl: c.lvl === "warn" ? "" : "info", t: c.text})); } catch (err){}
   if (rule.basis !== "never" && !panOk) flags.push({lvl:"hi", t:"No valid PAN or GSTIN found, so the higher rate of " + rate + "% is used. Get the deductee's PAN."});
   const g = String(x.vendorGstin || "").toUpperCase(), pp = String(x.vendorPan || "").toUpperCase();
   if (g && !gstinValid(g)) flags.push({lvl:"hi", t:"The supplier GSTIN " + g + " fails its check digit, so at least one character is wrong. Compare it with the bill."});
@@ -1399,15 +1403,97 @@ function buildPrompt(text, fileName, imageCount, kind){
     "File name: " + fileName + "\n\n" +
     "Extract the bill and classify the payment for TDS under India's Income-tax Act, 2025 (section 393). Choose natureId from:\n" + list + "\n\n" +
     "Reply with only one JSON object in this shape:\n" +
-    "{\"vendorName\": string, \"vendorGstin\": string|null, \"vendorPan\": string|null, \"buyerName\": string|null, \"buyerGstin\": string|null, \"invoiceNo\": string|null, \"invoiceDate\": \"YYYY-MM-DD\"|null, \"taxableValue\": number|null, \"cgst\": number, \"sgst\": number, \"igst\": number, \"totalAmount\": number|null, \"description\": string, \"natureId\": string, \"natureReason\": string, \"confidence\": number, \"rentMonths\": number|null, \"handwritten\": boolean, \"uncertainFields\": string[], \"legibilityNote\": string}\n" +
+    "{\"items\": [{\"description\": string, \"hsn\": string|null, \"qty\": number|null, \"unit\": string|null, \"rate\": number|null, \"taxable\": number, \"gstRate\": number|null}], \"vendorName\": string, \"vendorGstin\": string|null, \"vendorPan\": string|null, \"buyerName\": string|null, \"buyerGstin\": string|null, \"invoiceNo\": string|null, \"invoiceDate\": \"YYYY-MM-DD\"|null, \"taxableValue\": number|null, \"cgst\": number, \"sgst\": number, \"igst\": number, \"totalAmount\": number|null, \"description\": string, \"natureId\": string, \"natureReason\": string, \"confidence\": number, \"rentMonths\": number|null, \"handwritten\": boolean, \"uncertainFields\": string[], \"legibilityNote\": string}\n" +
     "How to read:\n" +
     "- The vendor issued the bill (name at the top, stamp or signature); the buyer is who it is billed to (\"M/s\", \"To\", \"Bill to\", \"Buyer\").\n" +
     "- Amounts: Indian grouping (1,25,000 = 125000), \"/-\" and \"Rs.\" mark rupees. If the amount is also written in words, use the words to confirm or correct the figure.\n" +
     "- If GST is not charged separately, taxableValue equals the total and all GST heads are 0. If the total is not written, add up the item lines (quantity x rate).\n" +
     "- Dates are day first (12/09/26 = 2026-09-12). A GSTIN has 15 characters; copy it exactly or give null.\n" +
     "- Give vendorPan only if a PAN is written; do not work it out. Use null for anything not on the bill, rather than guessing.\n" +
+    "- items: one entry for each line on the bill, each with its own GST rate when the bill shows more than one. Leave items empty if the bill has no line detail.\n" +
     "- description: at most 100 characters on what was supplied. natureReason: at most 160 characters. confidence: 0 to 1 for the natureId choice. rentMonths: months billed, only for rent.\n" +
     "- handwritten: true if the key figures are handwritten. uncertainFields: names of fields from the shape above that you could not read with confidence (for example \"totalAmount\", \"invoiceDate\"). legibilityNote: at most 120 characters on what was hard to read, or an empty string.";
+}
+/* ---------- what was actually billed: the item lines ---------- */
+const UNIT_WORDS = /\b(nos?|pcs?|pieces?|kgs?|kg|gms?|ltrs?|ltr|lts?|mtrs?|mtr|meters?|units?|bags?|boxes?|box|cartons?|drums?|rolls?|sets?|pairs?|dozens?|tons?|quintals?|sq\s?ft|sqft|sq\s?mtr|hrs?|hours?|days?|months?|trips?)\b/i;
+// pull item rows out of the lines between the table heading and the totals
+function readItems(lines){
+  const rows = itemLines(lines);
+  const out = [];
+  rows.forEach(l0 => {
+    // addresses, IPs, phone numbers and web addresses are not amounts
+    const l = String(l0)
+      .replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, " ")
+      .replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ")
+      .replace(/\b(?:ip|server|mac|imei|port)\b\s*[-:]?\s*\S+/gi, " ")
+      .replace(/\+?\d{2}[- ]?\d{10}\b/g, " ");
+    const amts = lineAmounts(l).filter(a => a.strong || a.v > 0).map(a => a.v);
+    if (!amts.length) return;
+    const hsn = (l.match(/\b(\d{4}|\d{6}|\d{8})\b/g) || []).find(c => /^(0[1-9]|[1-9]\d)/.test(c) && (c.length === 4 || c.length === 6 || c.length === 8) && num(c) > 1000) || "";
+    const unitM = l.match(UNIT_WORDS);
+    const taxable = amts[amts.length - 1];
+    let qty = 0, rate = 0;
+    if (amts.length >= 3){ qty = amts[amts.length - 3]; rate = amts[amts.length - 2]; }
+    else if (amts.length === 2){ rate = amts[0]; qty = rate ? r2(taxable / rate) : 0; }
+    if (qty && rate && Math.abs(r2(qty * rate) - taxable) > Math.max(1, taxable * 0.02)){ qty = 0; rate = 0; }
+    const gstM = l.match(/(\d{1,2}(?:\.\d+)?)\s*%/);
+    const desc = l.replace(/\s{2,}/g, " ").replace(/[\d,]+\.\d{2}/g, "").replace(/\b\d{4,8}\b/g, "").replace(UNIT_WORDS, "").replace(/\s+/g, " ").trim();
+    if (desc.replace(/[^A-Za-z]/g, "").length < 3) return;
+    out.push({desc: desc.slice(0, 80), hsn, qty, unit: unitM ? unitM[0] : "", rate, taxable, gstRate: gstM ? num(gstM[1]) : null});
+  });
+  // drop specks: a line worth almost nothing next to the rest is noise, not an item
+  const big = out.reduce((a, i) => Math.max(a, num(i.taxable)), 0);
+  return out.filter(i => num(i.taxable) >= Math.max(5, big * 0.005)).slice(0, 40);
+}
+// add up the items by GST rate, so a two-rate bill is obvious
+function itemSummary(x){
+  const items = (x.items || []).filter(i => num(i.taxable) > 0);
+  if (!items.length) return null;
+  const billTaxable = num(x.taxable !== undefined && x.taxable !== "" ? x.taxable : x.taxableValue);
+  const read = r2(items.reduce((a, i) => a + num(i.taxable), 0));
+  if (billTaxable && (read < billTaxable * 0.5 || read > billTaxable * 2)) return {items, rates: [], total: read, gstOnBill: 0, expect: null, multi: false, unreliable: true};
+  const byRate = new Map();
+  items.forEach(i => {
+    const k = i.gstRate == null ? "?" : String(i.gstRate);
+    const e = byRate.get(k) || {rate: i.gstRate, taxable: 0, n: 0, hsn: new Set()};
+    e.taxable = r2(e.taxable + num(i.taxable)); e.n++;
+    if (i.hsn) e.hsn.add(i.hsn);
+    byRate.set(k, e);
+  });
+  const total = r2(items.reduce((a, i) => a + num(i.taxable), 0));
+  const gstOnBill = r2(num(x.cgst) + num(x.sgst) + num(x.igst));
+  const rates = Array.from(byRate.values());
+  const expect = rates.every(r => r.rate != null) ? r2(rates.reduce((a, r) => a + r.taxable * num(r.rate) / 100, 0)) : null;
+  return {items, rates, total, gstOnBill, expect, multi: rates.filter(r => r.rate).length > 1};
+}
+function itemChecks(x){
+  const s = itemSummary(x);
+  if (!s) return [];
+  const out = [];
+  const taxable = num(x.taxable !== undefined && x.taxable !== "" ? x.taxable : x.taxableValue);
+  if (taxable && (s.total < taxable * 0.5 || s.total > taxable * 2))
+    out.push({lvl: "info", text: "The item lines could not be read reliably (they add up to " + INR.format(s.total) + " against a taxable value of " + INR.format(taxable) + "), so only the totals are used."});
+  else if (taxable && Math.abs(s.total - taxable) > Math.max(2, taxable * 0.01))
+    out.push({lvl: "warn", text: "The item lines add up to " + INR.format(s.total) + ", but the bill's taxable value is " + INR.format(taxable) + "."});
+  if (s.expect != null && s.gstOnBill && Math.abs(s.expect - s.gstOnBill) > Math.max(2, s.gstOnBill * 0.02))
+    out.push({lvl: "warn", text: "GST on the items works out to " + INR.format(s.expect) + ", but the bill charges " + INR.format(s.gstOnBill) + "."});
+  if (s.multi)
+    out.push({lvl: "info", text: "This bill has more than one GST rate (" + s.rates.filter(r => r.rate).map(r => r.rate + "%: " + INR.format(r.taxable)).join(", ") + "). Check the expense ledger and the input GST split."});
+  return out;
+}
+function itemsHtml(e, ro){
+  const x = e.x, s = itemSummary(x);
+  if (!s) return "";
+  const rows = s.items.map((i, k) => "<tr><td>" + esc(i.desc) + "</td><td>" + esc(i.hsn || "\u2014") + '</td><td class="n">' + (i.qty ? i.qty + (i.unit ? " " + esc(i.unit) : "") : "\u2014") +
+    '</td><td class="n">' + (i.rate ? INR.format(i.rate) : "\u2014") + '</td><td class="n">' + INR.format(num(i.taxable)) + '</td><td class="n">' + (i.gstRate == null ? "\u2014" : i.gstRate + "%") + "</td></tr>").join("");
+  const rateRows = s.rates.map(r => "<tr><td>" + (r.rate == null ? "rate not shown" : r.rate + "%") + "</td><td>" + (r.hsn.size ? Array.from(r.hsn).join(", ") : "\u2014") +
+    '</td><td class="n">' + INR.format(r.taxable) + '</td><td class="n">' + (r.rate ? INR.format(r2(r.taxable * r.rate / 100)) : "\u2014") + "</td></tr>").join("");
+  if (s.unreliable) return '<p class="note" style="margin:6px 0">The line items on this bill could not be read reliably, so only the totals are used.</p>';
+  return '<details class="itembox"' + (s.multi ? " open" : "") + '><summary>What was billed \u00b7 ' + s.items.length + " line" + (s.items.length === 1 ? "" : "s") +
+    (s.multi ? ' <span class="tag">two GST rates</span>' : "") + "</summary>" +
+    '<div class="tblwrap"><table class="data"><thead><tr><th>Description</th><th>HSN/SAC</th><th class="n">Quantity</th><th class="n">Rate</th><th class="n">Value</th><th class="n">GST</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+    (s.rates.length > 1 || s.multi ? '<h4 style="margin:10px 0 4px;font-size:14px">By GST rate</h4><div class="tblwrap"><table class="data"><thead><tr><th>Rate</th><th>HSN/SAC</th><th class="n">Taxable</th><th class="n">GST</th></tr></thead><tbody>' + rateRows + "</tbody></table></div>" : "") +
+    "</details>";
 }
 function isPdf(file){ return file.type === "application/pdf" || /\.pdf$/i.test(file.name); }
 function isImage(file){ return /^image\//.test(file.type) || /\.(jpe?g|jpe|jfif|pjpeg|png|webp|gif|hei[cf])$/i.test(file.name); }
@@ -2336,6 +2422,7 @@ function freeParse(text, cid, fileName, opts){
     invoiceNo: invoiceNo || null, invoiceDate: invoiceDate || null,
     taxableValue: taxable, cgst, sgst, igst, totalAmount: total,
     description: itemText.slice(0, 100),
+    items: readItems(lines),
     hint: lines.slice(0, 80).join(" ").slice(0, 1500),
     natureId: natureId || (nat ? nat.id : "none"),
     natureReason: natureReason || (nat ? "Free reading: " + nat.how : ""),
@@ -2870,6 +2957,11 @@ function applyExtraction(e, j, cid){
   e.x.cgst = r2(num(j.cgst)); e.x.sgst = r2(num(j.sgst)); e.x.igst = r2(num(j.igst));
   e.x.total = j.totalAmount == null ? "" : r2(num(j.totalAmount));
   e.x.description = s(j.description).slice(0, 140);
+  e.x.items = (j.items || []).map(i => ({
+    desc: String(i.desc || i.description || "").slice(0, 80), hsn: String(i.hsn || "").replace(/\D/g, "").slice(0, 8),
+    qty: num(i.qty), unit: String(i.unit || "").slice(0, 10), rate: num(i.rate),
+    taxable: r2(num(i.taxable)), gstRate: i.gstRate == null || i.gstRate === "" ? null : num(i.gstRate)
+  })).filter(i => i.desc && (i.taxable || i.qty)).slice(0, 40);
   if (j.hint) e.hint = String(j.hint).slice(0, 1500);
   e.x.rentMonths = j.rentMonths == null ? "" : Math.round(num(j.rentMonths));
   const suggested = rules().some(r => r.id === j.natureId) ? j.natureId : "none";
@@ -3919,7 +4011,7 @@ function viewDetail(e){
     field("Invoice total", "total", x.total, {ro, type:"number"}) +
     (e.natureId.indexOf("rent") === 0 ? field("Months billed", "rentMonths", x.rentMonths, {ro, type:"number"}) : "") +
     field("Billed to GSTIN", "buyerGstin", x.buyerGstin, {ro}) +
-    field("What was supplied", "description", x.description, {ro, wide:true}) + "</div>" + readBits +
+    field("What was supplied", "description", x.description, {ro, wide:true}) + "</div>" + itemsHtml(e, ro) + readBits +
     (!prev && e.fileName !== "Manual entry" && !ro && e.readMode ? '<p class="note" style="margin:6px 0 0">The invoice image is shown only in the session it was uploaded.</p>' : "") + "</div></section>";
 
   h += viewGst(e, c, ro, snap);
