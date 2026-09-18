@@ -318,6 +318,8 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .si-items .w60{width:60px}.si-items .w70{width:70px}.si-items .w90{width:90px}.si-items .w100{width:100px}
 .si-items td:nth-child(2){min-width:240px;width:34%}
 .si-items select[data-sk="unit"]{min-width:78px}
+.bk-table select[data-revnature]{min-width:150px;height:32px;border:1px solid var(--rule);border-radius:6px;padding:0 6px;font:inherit;background:var(--sheet);color:var(--ink)}
+.bk-table td .src.bad{font-weight:600}
 .si-items select[data-sk="gstRate"]{min-width:74px}
 .si-items td{padding:6px}
 .si-tot{margin:0}
@@ -516,7 +518,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 39 (firm account: shared data)";
+const APP_VERSION = "18 Sep 2026 · build 40 (TDS tick, year check in Tally, review table)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -993,9 +995,84 @@ function findParty(x, cid){
   const nm = norm(x.vendorName);
   return Object.values(parties).find(p => (pan && p.pan === pan) || (nm && norm(p.name) === nm)) || null;
 }
-function ytdOf(party, fy, natureId){
+/* ---------- what this supplier was already credited in Tally this year ---------- */
+function fyStartEnd(fy){
+  const m = String(fy).match(/(\d{4})/);
+  const y = m ? num(m[1]) : (num(String(fy).slice(0, 2)) + 2000);
+  return {from: y + "-04-01", to: (y + 1) + "-03-31"};
+}
+function partyLedgerName(party, e){
+  return exactLedger((e && e.partyLedger) || (party && party.ledgerName) || (e && e.x && e.x.vendorName) || (party && party.name) || "") || "";
+}
+// credits to the supplier's ledger in Tally for the year, without GST
+async function fetchPartyYtd(party, fy, ledger, opts){
+  const co = CO(), cid = S.coId;
+  if (!bridgeLive(co) || !ledger) return null;
+  const span = fyStartEnd(fy);
+  const today = new Date().toISOString().slice(0, 10);
+  const to = span.to < today ? span.to : today;
+  const j = await Bridge.call("/vouchers?company=" + encodeURIComponent(Bridge.openFor(co).name) + "&from=" + isoToTally(span.from) + "&to=" + isoToTally(to) + "&ledger=" + encodeURIComponent(ledger) + Bridge.pinQ(), null, 300000);
+  let credited = 0, gross = 0, n = 0;
+  [].concat(j.vouchers || []).forEach(v => {
+    if (/^yes$/i.test(v.cancelled || "")) return;
+    const entries = [].concat(v.entries || []);
+    const mine = entries.find(x => norm(x.ledger) === norm(ledger));
+    if (!mine) return;
+    const amt = parseFloat(String(mine.amount).replace(/,/g, "")) || 0;
+    if (amt <= 0) return;                       // only credits to the supplier
+    n++;
+    gross = r2(gross + amt);
+    // the bill value without GST: the other side, leaving out tax ledgers
+    let base = 0;
+    entries.forEach(x => {
+      if (norm(x.ledger) === norm(ledger)) return;
+      const a = parseFloat(String(x.amount).replace(/,/g, "")) || 0;
+      if (a >= 0) return;                        // debits carry the value
+      const info = ledgerInfo(x.ledger);
+      if (info && /duties|taxes/i.test(info.group || "")) return;
+      if (/\b(c|s|i|ut)gst|cess|tds\b/i.test(x.ledger)) return;
+      base = r2(base + Math.abs(a));
+    });
+    credited = r2(credited + (base || amt));
+  });
+  const info = {fy, ledger, credited, gross, vouchers: n, at: new Date().toISOString()};
+  const key = normName(ledger) + "|" + fy;
+  co.tallyYtd = Object.assign({}, co.tallyYtd, {[key]: info});
+  Store.saveCompany(co);
+  if (party){ party.tallyYtd = info; Store.saveParty(cid, party); }
+  return info;
+}
+function tallyYtdFor(party, fy, e){
+  const co = CO();
+  const led = partyLedgerName(party, e);
+  const byLedger = led && co && co.tallyYtd && co.tallyYtd[normName(led) + "|" + fy];
+  if (byLedger) return byLedger;
+  const t = party && party.tallyYtd;
+  return t && t.fy === fy ? t : null;
+}
+// our own approved bills of this party, this year, this payment type
+function ourYtd(party, fy, natureId, cid, skipSent){
+  let credited = 0, tdsBase = 0, bills = 0;
+  Object.values(D(cid).entries || {}).forEach(e => {
+    if (e.status !== "approved" || !e.snapshot) return;
+    if (fyOf(e.x.invoiceDate) !== fy || e.natureId !== natureId) return;
+    const p = findParty(e.x, cid);
+    if (!party || !p || p.id !== party.id) return;
+    if (skipSent && e.exportedAt) return;        // those are counted in the Tally figure
+    bills++;
+    credited = r2(credited + num(e.snapshot.base));
+    tdsBase = r2(tdsBase + num(e.snapshot.tdsBase));
+  });
+  return {credited, tdsBase, bills};
+}
+function ytdOf(party, fy, natureId, cid){
   const y = party && party.ytd && party.ytd[fy] && party.ytd[fy][natureId];
-  return {credited: y ? num(y.credited) : 0, tdsBase: y ? num(y.tdsBase) : 0};
+  const stored = {credited: y ? num(y.credited) : 0, tdsBase: y ? num(y.tdsBase) : 0};
+  const t = tallyYtdFor(party, fy, arguments[4]);
+  if (!t) return stored;
+  // Tally already holds the bills sent to it; count only the rest from here
+  const ours = ourYtd(party, fy, natureId, cid || S.coId, true);
+  return {credited: r2(t.credited + ours.credited), tdsBase: r2(Math.max(stored.tdsBase, ours.tdsBase)), fromTally: t, ours};
 }
 
 /* ------------------------------------------------------------------ */
@@ -1096,6 +1173,22 @@ function tdsSkipOf(e, co, party){
   if (co && co.bookTds === false) return {reason: "booked", from: "client"};
   return null;
 }
+// where the year's figure comes from: Tally plus bills here
+function ytdSourceHtml(e, c){
+  const party = c.party, fy = fyOf(e.x.invoiceDate), t = tallyYtdFor(party, fy, e);
+  const led = partyLedgerName(party, e);
+  const busy = S.ytdBusy === e.id;
+  if (t){
+    const ours = ourYtd(party, fy, c.rule.id, S.coId, true);
+    return '<p class="note" style="margin:4px 0 0">Year so far: <b>' + money0(t.credited) + "</b> credited to " + esc(t.ledger) + " in Tally (" + t.vouchers + " voucher" + (t.vouchers === 1 ? "" : "s") + ", GST left out)" +
+      (ours.credited ? " + <b>" + money0(ours.credited) + "</b> from " + ours.bills + " bill" + (ours.bills === 1 ? "" : "s") + " here not yet in Tally" : "") +
+      " \u00b7 read " + new Date(t.at).toLocaleString([], {day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"}) +
+      ' <button class="linkbtn" data-act="ytdFetch"' + (busy ? " disabled" : "") + ">" + (busy ? "Reading\u2026" : "Check again") + "</button></p>";
+  }
+  if (!bridgeLive()) return '<p class="note" style="margin:4px 0 0">This year\u2019s total counts only the bills entered here. Connect the Tally Bridge to include what is already booked in Tally.</p>';
+  if (!led) return '<p class="note" style="margin:4px 0 0">Choose the supplier\u2019s Tally ledger below to check what was already credited to it this year.</p>';
+  return '<p class="note" style="margin:4px 0 0">This year\u2019s total counts only the bills entered here. <button class="linkbtn" data-act="ytdFetch"' + (busy ? " disabled" : "") + ">" + (busy ? "Reading from Tally\u2026" : "Check " + esc(led) + " in Tally") + "</button></p>";
+}
 function skipText(skip){
   return (SKIP_REASONS[skip.reason] || skip.reason) + (skip.from === "supplier" ? " (set for this supplier)" : skip.from === "client" ? " (set for this client)" : "");
 }
@@ -1107,7 +1200,7 @@ function compute(e, cid){
   const base = r2(num(x.taxable) || Math.max(0, num(x.total) - gstTotal));
   const total = r2(num(x.total) || base + gstTotal);
   const fy = fyOf(x.invoiceDate);
-  const ytd = ytdOf(party, fy, rule.id);
+  const ytd = ytdOf(party, fy, rule.id, cid, e);
   const pan = effectivePan(x);
   const panOk = !!pan;
   const indHuf = panOk && (pan[3] === "P" || pan[3] === "H");
@@ -1125,6 +1218,7 @@ function compute(e, cid){
   }
 
   const after = ytd.credited + base;
+  const forceAlways = !!e.tdsAlways;
   const pendingCatch = Math.max(0, r2(ytd.credited - ytd.tdsBase));
   switch (rule.basis){
     case "never":
@@ -1169,6 +1263,10 @@ function compute(e, cid){
         why.push("Purchases this year reach " + money0(after) + ". TDS applies only on the " + money0(tdsBase) + " above " + money0(rule.limit) + ".");
       } else why.push("Purchases this year of " + money0(after) + " are within " + money0(rule.limit) + ".");
       break;
+  }
+  if (!applicable && forceAlways && rule.basis !== "never"){
+    applicable = true; tdsBase = base;
+    why.push("Deducted on your instruction, although this bill is below the limits.");
   }
   if (applicable && rule.basis !== "excess") why.push("TDS is worked on the value before GST, as GST is shown separately.");
 
@@ -3540,7 +3638,79 @@ function viewRules(){
 }
 
 /* ---------- Client: invoices ---------- */
+/* ---------- all drafts in one table (for uploads of many bills) ---------- */
+function draftRows(){
+  const cid = S.coId;
+  return Object.values(D().entries).filter(e => e.status === "draft").sort(byDate).map(e => {
+    const c = compute(e, cid);
+    return {e, c};
+  });
+}
+function viewReviewTable(){
+  const co = CO(), rows = draftRows();
+  const sel = S.revSel = S.revSel || new Set();
+  const nSel = rows.filter(r => sel.has(r.e.id)).length;
+  let h = '<div class="bk"><div class="bk-head"><div class="bk-id"><h2 class="bk-title">Review ' + rows.length + " uploaded bill" + (rows.length === 1 ? "" : "s") + '</h2><div class="bk-sub">' + esc(co.name) + " \u00b7 tick the ones to book TDS on, then approve together</div></div>" +
+    '<dl class="bk-figs"><div><dt>Bills</dt><dd>' + rows.length + '</dd></div><div><dt>Value</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.e.x.total), 0))) + '</dd></div><div><dt>TDS</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.c.tds), 0))) + "</dd></div></dl>" +
+    '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button><button class="btn small" data-act="bankPickBills">Upload more</button></div></div>';
+  if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
+  h += '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th><th class="dt">Date</th><th>Supplier</th><th>Bill no.</th><th class="n">Value</th><th>Payment type</th><th class="ck">TDS</th><th class="n">TDS</th><th>This year vs limit</th><th class="ac"></th></tr></thead><tbody>';
+  h += rows.map(({e, c}) => {
+    const fy = fyOf(e.x.invoiceDate), t = tallyYtdFor(c.party, fy, e);
+    const m = c.meter;
+    const limitCell = !m || !m.limit ? '<span class="src muted">no yearly limit</span>'
+      : '<span class="' + (m.used + m.add > m.limit ? "src bad" : "src") + '">' + money0(m.used + m.add) + " of " + money0(m.limit) + (m.used + m.add > m.limit ? " \u00b7 crossed" : " \u00b7 within") + "</span>" +
+        '<span class="src muted">' + (t ? "incl. " + money0(t.credited) + " from Tally" : "bills here only") + "</span>";
+    const miss = (c.missing || []).length || c.flags.some(f => f.lvl === "hi") || e.confirmType;
+    return '<tr' + (sel.has(e.id) ? ' class="picked"' : "") + '><td class="ck"><input type="checkbox" data-revsel="' + e.id + '"' + (sel.has(e.id) ? " checked" : "") + "></td>" +
+      '<td class="dt">' + (e.x.invoiceDate ? shortDate(e.x.invoiceDate) : "\u2014") + "</td>" +
+      '<td class="pt"><div class="pn">' + esc(e.x.vendorName || e.fileName || "\u2014") + '</div><div class="nr">' + esc(e.x.vendorGstin || e.x.vendorPan || "no GSTIN or PAN") + "</div></td>" +
+      "<td>" + esc(e.x.invoiceNo || "\u2014") + '</td><td class="n">' + INR.format(num(e.x.total)) + "</td>" +
+      '<td><select data-revnature="' + e.id + '">' + rules().map(r => '<option value="' + r.id + '"' + (r.id === e.natureId ? " selected" : "") + ">" + esc(r.label) + "</option>").join("") + "</select></td>" +
+      '<td class="ck"><input type="checkbox" data-revtds="' + e.id + '"' + (c.tdsWould > 0 && !c.skip ? " checked" : "") + (c.rule && c.rule.basis === "never" ? " disabled" : "") + ' title="' + esc(c.skip ? skipText(c.skip) : c.tdsWould > 0 ? "TDS is deducted on this bill" : "Below the limits: tick to deduct anyway") + '"></td>' +
+      '<td class="n">' + (c.tds ? "<b>" + INR.format(c.tds) + "</b>" : c.tdsWould ? '<span class="src muted">' + INR.format(c.tdsWould) + " not booked</span>" : "\u2014") + "</td>" +
+      "<td>" + limitCell + "</td>" +
+      '<td class="ac">' + (miss ? '<button class="btn small" data-revopen="' + e.id + '">Check</button>' : '<button class="btn small primary" data-revapprove="' + e.id + '">Approve</button>') +
+      '<button class="icon" data-revopen="' + e.id + '" title="Open this bill">\u2197</button></td></tr>';
+  }).join("");
+  h += "</tbody></table></div></div>";
+  return h;
+}
+function reviewBar(){
+  const rows = draftRows(), sel = S.revSel || new Set();
+  const picked = rows.filter(r => sel.has(r.e.id));
+  const ready = rows.filter(r => !(r.c.missing || []).length && !r.c.flags.some(f => f.lvl === "hi") && !r.e.confirmType);
+  if (picked.length){
+    return '<div class="actionbar bk-actionbar"><div class="ab-left"><b>' + picked.length + " selected</b> <span class=\"muted\">\u00b7 TDS " + INR.format(r2(picked.reduce((a, r) => a + num(r.c.tds), 0))) + '</span> <button class="linkbtn" data-act="revNone">Clear</button></div>' +
+      '<div class="ab-right"><button class="btn" data-act="revTdsOn">Book TDS</button><button class="btn" data-act="revTdsOff">Do not book TDS</button>' +
+      '<button class="btn" data-act="revCheckTally"' + (bridgeLive() ? "" : " disabled") + '>Check year in Tally</button>' +
+      '<button class="btn primary" data-act="revApprove">Approve ' + picked.length + "</button></div></div>";
+  }
+  return '<div class="actionbar bk-actionbar"><div class="ab-left"><span class="bk-stat"><b>' + rows.length + '</b> to review</span><span class="bk-stat"><b>' + ready.length + "</b> ready to approve</span></div>" +
+    '<div class="ab-right"><button class="btn" data-act="revCheckTallyAll"' + (bridgeLive() ? "" : " disabled") + '>Check the year in Tally for all</button><button class="btn primary" data-act="revApproveAll"' + (ready.length ? "" : " disabled") + ">Approve all that are ready (" + ready.length + ")</button></div></div>";
+}
+function revSet(e, on){
+  const c = compute(e);
+  if (on){ e.tdsSkip = null; if (c.skip && c.skip.from !== "bill") e.tdsForce = true; if (c.tdsWould <= 0){ e.tdsAlways = true; e.tdsForce = true; } }
+  else { e.tdsForce = false; e.tdsAlways = false; if (c.tdsWould > 0) e.tdsSkip = e.tdsSkip || "pay"; }
+  Store.saveEntry(S.coId, e);
+}
+async function reviewCheckTally(list){
+  const fy = f => fyOf(f.e.x.invoiceDate);
+  let done = 0, failed = 0;
+  S.revBusy = true; render();
+  for (const r of list){
+    const led = partyLedgerName(r.c.party, r.e);
+    if (!led) continue;
+    if (tallyYtdFor(r.c.party, fy(r), r.e)) continue;
+    try { await fetchPartyYtd(r.c.party, fy(r), led); done++; } catch (e){ failed++; }
+  }
+  S.revBusy = false;
+  toast(done ? "Checked " + done + " supplier" + (done === 1 ? "" : "s") + " in Tally." + (failed ? " " + failed + " could not be read." : "") : "Nothing to check: the suppliers need a Tally ledger and a saved PAN.");
+  render();
+}
 function viewInvoices(){
+  if (S.reviewTable && S.filter === "draft") return viewReviewTable();
   const d = D(), co = CO(), all = Object.values(d.entries);
   const shown = all.filter(e => e.status === S.filter).sort((a, b) => S.filter === "draft" ? byDate(a, b) : byDate(b, a));
   if (!S.selected || !d.entries[S.selected]) S.selected = shown[0] ? shown[0].id : null;
@@ -3565,6 +3735,7 @@ function viewInvoices(){
       '<p class="note" style="margin:6px 0">Use this when photos cannot be read in this view: ask Claude in a chat to read the bill and reply in this app\'s format, then paste the reply here.</p>' +
       '<div class="row"><button class="btn primary small" data-act="pasteAdd">Add to ' + esc(co.name) + '</button><button class="btn small" data-act="pasteClose">Cancel</button></div></div>' : "") +
     viewJobs(j => j.target === co.id || j.cid === co.id) +
+    (Object.values(d.entries).filter(e => e.status === "draft").length > 1 ? '<div class="row" style="margin:8px 0 0"><button class="btn small" data-act="revTable">Review all ' + Object.values(d.entries).filter(e => e.status === "draft").length + ' in a table</button></div>' : "") +
     '<div class="filters">' + f("draft", "To review") + f("approved", "Approved") + f("rejected", "No entry") + (cnt("duplicate") || S.filter === "duplicate" ? f("duplicate", "Duplicates") : "") + "</div>" +
     (items ? '<ul class="queue">' + items + "</ul>" : '<p class="empty">' + esc(emptyMsg) + "</p>") +
     "</div><div>" + (S.selected ? viewDetail(d.entries[S.selected]) : '<div class="detail"><section><p class="empty">Select an invoice to see its TDS draft.</p></section></div>') + "</div></div>";
@@ -3624,8 +3795,9 @@ function viewDetail(e){
     (e.confirmType && !ro && !(c.party && c.party.natureDefault) && !c.skip ? '<div class="row" style="margin:-4px 0 10px"><button class="btn small" data-act="confirmType">Confirm payment type</button><span class="note">New supplier: the payment type decides the TDS section.</span></div>' : "") +
     (e.ai && e.ai.reason ? '<p class="note" style="margin:-4px 0 10px">' + (/Claude/.test(e.readMode || "") || !e.readMode ? "Claude: " + esc(e.ai.reason) : "Guessed from the bill: " + esc(e.ai.reason.replace(/^Free reading:\s*/, ""))) + "</p>" : "") +
     '<p class="verdict ' + (v.applicable ? "yes" : "nope") + '">' + (v.applicable ? (v.skip ? "TDS applies: " + money(v.tdsWould) + ", not booked" : "TDS applies: " + money(v.tds)) : "No TDS on this invoice") + "</p>" +
-    ((v.tdsWould > 0 || e.tdsSkip) && !ro ?
-      '<div class="skipbox"><label class="chk"><input type="checkbox" data-bookTds' + (v.skip ? "" : " checked") + "> <b>Book TDS in this entry</b></label>" +
+    ((v.tdsWould > 0 || e.tdsSkip || (v.rule && v.rule.basis !== "never")) && !ro ?
+      '<div class="skipbox"><label class="chk"><input type="checkbox" data-bookTds' + (v.tdsWould > 0 && !v.skip ? " checked" : "") + "> <b>Deduct TDS on this bill</b></label>" +
+      (v.tdsWould <= 0 && !v.skip ? '<p class="note" style="margin:4px 0 0">Below the limits, so no TDS is due. Tick the box to deduct anyway (for example when you expect the yearly limit to be crossed).</p>' : "") +
       (v.skip ? (v.skip.from === "bill"
         ? '<label class="f" style="margin-top:6px"><span>Why not</span><select data-e="tdsSkip">' + Object.entries(SKIP_REASONS).map(([k, t]) => '<option value="' + k + '"' + (k === e.tdsSkip ? " selected" : "") + ">" + esc(t) + "</option>").join("") + "</select></label>"
         : '<p class="note" style="margin:4px 0 0">Not booked: ' + esc(skipText(v.skip)) + ". Tick the box to book it on this bill anyway.</p>") : "") + "</div>"
@@ -3637,6 +3809,7 @@ function viewDetail(e){
     h += '<div class="meter"><div class="bar" role="img" aria-label="' + esc(m.label + ": " + money0(m.used + m.add) + " of " + money0(m.limit)) + '"><div class="used" style="width:' + usedPct + '%"></div><div class="add' + (m.used + m.add > m.limit ? " over" : "") + '" style="left:' + usedPct + "%;width:" + addPct + '%"></div>' +
       '<div style="position:absolute;top:-2px;bottom:-2px;left:calc(' + limPct + '% - 1px);width:2px;background:var(--ink)"></div></div>' +
       '<div class="cap"><span>' + esc(m.label) + "</span><span>" + (m.used ? money0(m.used) + " earlier + " : "") + money0(m.add) + " this bill / limit " + money0(m.limit) + "</span></div></div>";
+    h += ytdSourceHtml(e, c);
   }
   if (v.catchUp > 0 && !ro) h += '<label class="chk" style="margin-top:10px"><input type="checkbox" data-e="includeCatchUp"' + (e.includeCatchUp ? " checked" : "") + "> Include TDS on earlier bills (" + money0(v.catchUp) + ") in this entry</label>";
   h += '</div><dl class="figs"><dt>Section</dt><dd>' + esc(v.ref) + "</dd><dt>Old section</dt><dd>" + esc(v.old) + "</dd>" +
@@ -6047,6 +6220,10 @@ function bankChange(t){
   return false;
 }
 document.addEventListener("click", ev => {
+  const rs = ev.target.closest && ev.target.closest("[data-revsel]");
+  if (rs){ S.revSel = S.revSel || new Set(); if (rs.checked) S.revSel.add(rs.dataset.revsel); else S.revSel.delete(rs.dataset.revsel); render(); return; }
+  const ra = ev.target.closest && ev.target.closest("[data-revall]");
+  if (ra){ S.revSel = new Set(ra.checked ? draftRows().map(r => r.e.id) : []); render(); return; }
   const cb = ev.target.closest && ev.target.closest("[data-bsel]");
   if (cb){ bankToggle(cb, ev.shiftKey); return; }
   const all = ev.target.closest && ev.target.closest("[data-bselall]");
@@ -7976,6 +8153,7 @@ function viewCloudSettings(){
 
 // Always-visible bar at the bottom of the screen for the bill that is open
 function actionBar(){
+  if (S.view === "company" && S.tab === "invoices" && S.reviewTable && S.filter === "draft") return reviewBar();
   if (S.view === "company" && S.tab === "bank") return bankBar();
   if (S.view === "company" && S.tab === "sales") return salesBar();
   if (S.view !== "company" || S.tab !== "invoices") return "";
@@ -8202,6 +8380,9 @@ function curEntry(){ return S.view === "company" && S.selected ? D().entries[S.s
 document.addEventListener("click", ev => {
   const t = ev.target.closest("button,[data-select],[data-open],#drop,#dropAuto,#modal,#bankDrop,#salesDrop");
   if (!t) return;
+  if (t.dataset.revopen){ S.selected = t.dataset.revopen; S.reviewTable = false; render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.revapprove){ const e0 = D().entries[t.dataset.revapprove]; if (e0){ approve(e0); refreshStats(S.coId); toast("Approved."); render(); } return; }
+  if (t.hasAttribute && (t.hasAttribute("data-revsel") || t.hasAttribute("data-revall"))) return;
   if (t.dataset.billfixsel){
     const sel = document.getElementById(t.dataset.billfixsel), to = sel && sel.value;
     if (!to){ toast("Choose the Tally ledger first."); return; }
@@ -8267,6 +8448,39 @@ document.addEventListener("click", ev => {
     case "reread": if (e) rereadCarefully(e); break;
     case "confirmType": if (e){ e.confirmType = false; Store.saveEntry(S.coId, e); refreshStats(S.coId); toast("Payment type confirmed: " + ruleOf(e.natureId).label + ". It will be remembered for this supplier when you approve."); render(); } break;
     case "skipTds": if (e && e.status === "draft"){ e.tdsForce = false; e.tdsSkip = "pay"; Store.saveEntry(S.coId, e); refreshStats(S.coId); toast("TDS will not be booked on this bill. Choose the reason in the TDS decision section."); render(); } break;
+    case "revTable": S.reviewTable = true; S.revSel = new Set(); render(); window.scrollTo(0, 0); break;
+    case "revList": S.reviewTable = false; render(); break;
+    case "bankPickBills": S.reviewTable = false; render(); setTimeout(() => { const el = document.getElementById("fileIn"); if (el) el.click(); }, 50); break;
+    case "revNone": S.revSel = new Set(); render(); break;
+    case "revTdsOn": case "revTdsOff": {
+      const on = S.arm === null || true, want = t.dataset.act === "revTdsOn";
+      draftRows().filter(r => S.revSel.has(r.e.id)).forEach(r => revSet(r.e, want));
+      toast((want ? "TDS will be booked on " : "TDS will not be booked on ") + S.revSel.size + " bills.");
+      render(); break;
+    }
+    case "revApprove": case "revApproveAll": {
+      const rows = draftRows().filter(r => t.dataset.act === "revApprove" ? S.revSel.has(r.e.id) : (!(r.c.missing || []).length && !r.c.flags.some(f => f.lvl === "hi") && !r.e.confirmType));
+      let ok = 0, held = 0;
+      rows.forEach(r => { const c = compute(r.e); if ((c.missing || []).length){ held++; return; } approve(r.e); ok++; });
+      S.revSel = new Set();
+      toast(ok + " approved" + (held ? ", " + held + " still need details" : "") + ".");
+      refreshStats(S.coId); render(); break;
+    }
+    case "revCheckTally": reviewCheckTally(draftRows().filter(r => S.revSel.has(r.e.id))); break;
+    case "revCheckTallyAll": reviewCheckTally(draftRows()); break;
+    case "ytdFetch": {
+      const e0 = curEntry(); if (!e0) break;
+      const c0 = compute(e0), led = partyLedgerName(c0.party, e0);
+      if (!led){ toast("Set the supplier's Tally ledger on this bill first."); break; }
+      S.ytdBusy = e0.id; render();
+      fetchPartyYtd(c0.party, fyOf(e0.x.invoiceDate), led).then(info => {
+        S.ytdBusy = null;
+        if (info) toast(money0(info.credited) + " credited to " + led + " in Tally this year (" + info.vouchers + " vouchers).");
+        else toast("Could not read that ledger from Tally.");
+        render();
+      }, err => { S.ytdBusy = null; toast("Could not read from Tally: " + err.message); render(); });
+      break;
+    }
     case "bookTds": if (e && e.status === "draft"){ const c0 = compute(e); e.tdsSkip = null; if (c0.skip && c0.skip.from !== "bill") e.tdsForce = true; Store.saveEntry(S.coId, e); refreshStats(S.coId); render(); } break;
     case "rcmApply": if (e){ const sg = suggestRcm(e, CO()); const cat = sg ? sg.cat : "other"; e.rcm = {on:true, cat, rate:catRate(cat), inter:null}; Store.saveEntry(S.coId, e); render(); } break;
     case "rcmDismiss": if (e){ e.rcmDismissed = true; Store.saveEntry(S.coId, e); render(); } break;
@@ -8472,6 +8686,8 @@ function setPath(o, path, v){ const k = path.split("."); if (k.length === 2) o[k
 
 document.addEventListener("change", ev => {
   const t = ev.target, e = curEntry(), cid = S.coId;
+  if (t.dataset && t.dataset.revtds){ const e0 = D().entries[t.dataset.revtds]; if (e0){ revSet(e0, t.checked); render(); } return; }
+  if (t.dataset && t.dataset.revnature){ const e0 = D().entries[t.dataset.revnature]; if (e0){ e0.natureId = t.value; e0.confirmType = false; Store.saveEntry(S.coId, e0); render(); } return; }
   if (t.dataset && t.dataset.cloud){
     const k = t.dataset.cloud;
     if (k === "email" || k === "password"){ S.cloudForm = Object.assign({}, S.cloudForm, {[k]: t.value}); } if (k === "auto"){ Cloud.setCfg({auto: t.checked}); startCloudSync(); } else if (k === "email") Cloud.setCfg({email: t.value.trim()}); return; }
@@ -8502,6 +8718,8 @@ document.addEventListener("change", ev => {
   if (t.dataset.gstrule && CO()){ const co = CO(); co.gstBlock = co.gstBlock || {}; co.gstBlock[t.dataset.gstrule] = t.value; Store.saveCompany(co); render(); return; }
   if (t.hasAttribute("data-bookTds") && e && e.status === "draft"){
     const c0 = compute(e, cid);
+    if (t.checked && c0.tdsWould <= 0){ e.tdsAlways = true; e.tdsSkip = null; e.tdsForce = true; Store.saveEntry(cid, e); render(); return true; }
+    if (!t.checked && e.tdsAlways && c0.tdsWould > 0 && !c0.skip){ e.tdsAlways = false; Store.saveEntry(cid, e); render(); return true; }
     if (t.checked){
       // book it: clear a bill-level choice, or override a supplier/client setting for this bill
       if (e.tdsSkip) e.tdsSkip = null;
