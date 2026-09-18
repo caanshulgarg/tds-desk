@@ -234,6 +234,8 @@ html{scroll-padding-bottom:150px}
 .bk-tabs button[aria-selected=true]{background:var(--sheet);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
 .bk-tabs .cnt{display:inline-block;min-width:20px;padding:0 6px;border-radius:10px;background:var(--rule);font-size:12px;margin-left:4px;color:var(--ink)}
 .bk-switch{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted);cursor:pointer}
+#confirmBox .cbx.wide{max-width:min(860px,94vw)}
+#confirmBox .cbx{max-height:90vh;overflow:auto}
 .bk-found{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 0;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;background:var(--sheet);font-size:13.5px}
 .bk-allled{height:30px;min-width:220px;border:1px solid var(--rule);border-radius:6px;padding:0 8px;font:inherit;background:var(--paper);color:var(--ink)}
 .bk-search{margin-left:auto;min-width:240px;height:34px;padding:0 10px;border:1px solid var(--rule);border-radius:8px;font:inherit;background:var(--sheet);color:var(--ink)}
@@ -538,7 +540,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 47 (search and set all, ledgers created in Tally at once)";
+const APP_VERSION = "18 Sep 2026 · build 48 (written rules for bank entries)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -4084,11 +4086,11 @@ async function loadBank(cid){
   S.bank = {cid, loading: true, stmts: [], cur: null, rows: [], rules: [], ledgers: {list: [], importedAt: ""}, newLed: [], keys: {}, books: {},
     filter: "review", grouped: false, showSettings: false, q: "", limit: 100, pendingRule: null, busy: "", createFor: null, sel: new Set(), sticky: new Set(), undo: null, hist: {rows: {}}, histVer: 0};
   render();
-  const [stmts, rules, ledgers, newLed, keys, books, hist, salesRef] = await Promise.all([
-    BankDB.get("stmts:" + cid), BankDB.get("rules:" + cid), BankDB.get("ledgers:" + cid), BankDB.get("newled:" + cid), BankDB.get("keys:" + cid), BankDB.get("books:" + cid), BankDB.get("hist:" + cid), BankDB.get("sales:" + cid)]);
+  const [stmts, rules, ledgers, newLed, keys, wrules, books, hist, salesRef] = await Promise.all([
+    BankDB.get("stmts:" + cid), BankDB.get("rules:" + cid), BankDB.get("ledgers:" + cid), BankDB.get("newled:" + cid), BankDB.get("keys:" + cid), BankDB.get("wrules:" + cid), BankDB.get("books:" + cid), BankDB.get("hist:" + cid), BankDB.get("sales:" + cid)]);
   if (S.bank && S.bank.cid === cid) S.bank.salesRef = salesRef || [];
   if (!S.bank || S.bank.cid !== cid) return;
-  Object.assign(S.bank, {stmts: stmts || [], rules: rules || [], ledgers: ledgers || {list: [], importedAt: ""}, newLed: newLed || [], keys: keys || {}, books: books || {}, hist: hist && hist.rows ? hist : {rows: {}}, loading: false});
+  Object.assign(S.bank, {stmts: stmts || [], rules: rules || [], wrules: wrules || [], ledgers: ledgers || {list: [], importedAt: ""}, newLed: newLed || [], keys: keys || {}, books: books || {}, hist: hist && hist.rows ? hist : {rows: {}}, loading: false});
   S.bank.histVer++;
   if (S.bank.stmts.length) await openStatement(S.bank.stmts[S.bank.stmts.length - 1].id);
   render();
@@ -4121,6 +4123,7 @@ function saveBank(what){
   }
   if (what && what.stmts) BankDB.set("stmts:" + cid, b.stmts);
   if (what && what.rules) BankDB.set("rules:" + cid, b.rules);
+  if (what && what.wrules) BankDB.set("wrules:" + cid, b.wrules || []);
   if (what && what.ledgers) BankDB.set("ledgers:" + cid, b.ledgers);
   if (what && what.newLed) BankDB.set("newled:" + cid, b.newLed);
   if (what && what.keys) BankDB.set("keys:" + cid, b.keys);
@@ -5195,6 +5198,304 @@ function suggestRow(row, ctx){
   }
   return none(d.name ? "No Tally ledger found for \u201c" + d.name + "\u201d" : "The other party could not be identified from the narration.");
 }
+/* ================================================================== */
+/* Written rules: say it once, and every statement follows it          */
+/* ================================================================== */
+const RULE_MODES = ["UPI", "NEFT", "RTGS", "IMPS", "CHQ", "ACH", "CASH", "CARD"];
+const RULE_KINDS = [                       // firm-wide rules point at a kind, resolved per client
+  ["charges", "Bank charges ledger"], ["interest", "Interest received ledger"], ["salary", "Salaries ledger"],
+  ["tds", "TDS payable ledger"], ["gstCash", "GST cash ledger"], ["advanceTax", "Advance tax ledger"],
+  ["pf", "PF payable ledger"], ["esi", "ESI payable ledger"], ["cash", "Cash ledger"], ["roundOff", "Round off ledger"]
+];
+function firmRules(){ S.firm.bankRules = S.firm.bankRules || []; return S.firm.bankRules; }
+function clientRules(){ const b = B(); if (!b) return []; b.wrules = b.wrules || []; return b.wrules; }
+function allRules(){ return clientRules().concat(firmRules()); }   // client rules win
+function newRule(p){
+  return Object.assign({
+    id: uid("rl"), name: "", scope: "client", off: false,
+    when: {text: [], dir: "any", amtMin: "", amtMax: "", modes: [], acNo: "", account: "any", from: "", to: ""},
+    then: {action: "set", ledger: "", kind: "", vtype: "", tdsNature: "", tdsAtPay: false, splits: [], narr: "", ready: true},
+    stats: {used: 0, over: 0, lastAt: ""}
+  }, p || {});
+}
+function saveRules(scope){
+  if (scope === "firm") Store.saveFirm();
+  else saveBank({wrules: true});
+}
+/* ---------- does this rule fit this line? ---------- */
+function ruleHits(rule, row, acc){
+  if (!rule || rule.off) return false;
+  const w = rule.when || {}, hay = (row.narr + " " + (row.ref || "")).toLowerCase();
+  for (const c of (w.text || [])){
+    const v = String(c.v || "").toLowerCase().trim();
+    if (!v) continue;
+    const has = hay.includes(v);
+    if (c.op === "has" && !has) return false;
+    if (c.op === "not" && has) return false;
+    if (c.op === "starts" && !hay.trim().startsWith(v)) return false;
+    if (c.op === "is" && normName(row.dec.name || "") !== normName(v) && hay.trim() !== v) return false;
+  }
+  if (w.dir === "out" && !row.debit) return false;
+  if (w.dir === "in" && !row.credit) return false;
+  const amt = row.debit || row.credit;
+  if (w.amtMin !== "" && w.amtMin != null && amt < num(w.amtMin)) return false;
+  if (w.amtMax !== "" && w.amtMax != null && amt > num(w.amtMax)) return false;
+  if ((w.modes || []).length && !w.modes.includes(row.dec.mode || "")) return false;
+  if (w.acNo){
+    const want = String(w.acNo).replace(/\D/g, "");
+    const got = (row.narr.match(/\d{6,18}/g) || []).map(x => x.replace(/^0+/, ""));
+    if (want && !got.some(g => g.endsWith(want.replace(/^0+/, "")) || want.endsWith(g))) return false;
+  }
+  if (w.account && w.account !== "any" && acc && acc.id !== w.account) return false;
+  if (w.from && row.date < w.from) return false;
+  if (w.to && row.date > w.to) return false;
+  return (w.text || []).some(c => String(c.v || "").trim() && c.op !== "not") || w.acNo || (w.modes || []).length ||
+         w.amtMin !== "" || w.amtMax !== "";   // a rule with no positive condition never fires
+}
+// the ledger a rule asks for, in this client's Tally
+function ruleLedger(rule, co){
+  if (rule.then.kind) return stdLedger(co, rule.then.kind) || "";
+  return rule.then.ledger || "";
+}
+function ruleLabel(rule){ return rule.name || (rule.when.text || []).map(c => c.v).filter(Boolean).join(" + ") || "rule"; }
+// fill {month}, {year}, {party}, {amount} in a narration
+function ruleNarr(tpl, row){
+  if (!tpl) return "";
+  const d = row.date ? new Date(row.date) : null;
+  return tpl.replace(/\{month\}/gi, d ? d.toLocaleString("en-IN", {month: "long"}) : "")
+            .replace(/\{year\}/gi, d ? String(d.getFullYear()) : "")
+            .replace(/\{party\}/gi, row.dec.name || "")
+            .replace(/\{amount\}/gi, INR.format(row.debit || row.credit))
+            .replace(/\{date\}/gi, row.date ? fmtDate(row.date) : "");
+}
+/* ---------- put a rule on a line ---------- */
+function applyRule(rule, row, co, acc){
+  const led = ruleLedger(rule, co);
+  if (rule.then.action === "ignore"){
+    row.ledger = ""; row.state = "ignored"; row.ruleId = rule.id; row.srcLabel = "rule: " + ruleLabel(rule);
+    row.why = ["Set aside by your rule \u201c" + ruleLabel(rule) + "\u201d."];
+    return true;
+  }
+  if (!led || !exactLedger(led)){
+    row.ruleId = rule.id; row.ruleWant = led;
+    row.state = "attention"; row.ledger = "";
+    row.why = ["Your rule \u201c" + ruleLabel(rule) + "\u201d asks for " + (led ? "\u201c" + led + "\u201d" : "a ledger") + ", which is not in Tally. Choose one, or create it."];
+    row.source = "rule"; row.level = "none"; row.srcLabel = "rule needs a ledger";
+    return true;
+  }
+  row.ledger = exactLedger(led);
+  row.ruleId = rule.id;
+  row.source = "rule";
+  row.srcLabel = "rule: " + ruleLabel(rule);
+  row.level = rule.then.ready ? "auto" : "guess";
+  row.why = ["Your rule \u201c" + ruleLabel(rule) + "\u201d sets " + row.ledger + "."];
+  row.vtype = rule.then.vtype || vtypeFor(row, row.ledger);
+  row.userSet = false;
+  row.splits = [];
+  if ((rule.then.splits || []).length){
+    const amt = row.debit || row.credit;
+    let left = r2(amt);
+    const parts = [];
+    rule.then.splits.forEach((sp, i) => {
+      const lname = sp.kind ? stdLedger(co, sp.kind) : sp.ledger;
+      const value = sp.pct !== "" && sp.pct != null ? r2(amt * num(sp.pct) / 100) : r2(num(sp.amt));
+      if (lname && exactLedger(lname) && value > 0){ parts.push({ledger: exactLedger(lname), amt: value}); left = r2(left - value); }
+    });
+    if (parts.length){
+      if (left > 0.009) parts.push({ledger: row.ledger, amt: left});         // the rest goes to the main ledger
+      row.splits = parts;
+      row.why.push("Split: " + parts.map(p => p.ledger + " " + INR.format(p.amt)).join(", ") + ".");
+    }
+  }
+  if (rule.then.tdsAtPay && row.debit){
+    const rate = num(rule.then.tdsRate) || 0;
+    if (rate > 0){ row.tdsAtPay = r2((row.debit) * rate / 100); row.tdsLedger = bankLedgers(co).tds; row.why.push("TDS at payment " + rate + "%."); }
+  }
+  if (rule.then.narr) row.ruleNarr = ruleNarr(rule.then.narr, row);
+  row.state = rule.then.ready ? "ready" : "suggested";
+  return true;
+}
+// the first rule that fits, client rules before firm rules
+function matchRule(row, co, acc){
+  const list = allRules();
+  for (const r of list) if (ruleHits(r, row, acc)) return r;
+  return null;
+}
+function rulePreview(rule){
+  const b = B(); if (!b) return {n: 0, rows: []};
+  const acc = curStmt() ? (CO(b.cid).bankAccounts || []).find(a => a.id === curStmt().acctId) : null;
+  const rows = b.rows.filter(r => ruleHits(rule, r, acc));
+  return {n: rows.length, rows: rows.slice(0, 5), total: b.rows.length};
+}
+// count how often a rule was overridden by hand, so a bad rule shows up
+function noteOverride(row){
+  if (!row.ruleId) return;
+  const r = allRules().find(x => x.id === row.ruleId);
+  if (!r) return;
+  r.stats = r.stats || {used: 0, over: 0};
+  r.stats.over = (r.stats.over || 0) + 1;
+  saveRules(r.scope);
+}
+function countRuleUse(rows){
+  const by = {};
+  rows.forEach(r => { if (r.ruleId) by[r.ruleId] = (by[r.ruleId] || 0) + 1; });
+  let touched = false;
+  allRules().forEach(r => {
+    if (by[r.id]){ r.stats = r.stats || {used: 0, over: 0}; r.stats.used = (r.stats.used || 0) + by[r.id]; r.stats.lastAt = new Date().toISOString(); touched = true; }
+  });
+  if (touched){ saveRules("client"); saveRules("firm"); }
+}
+/* ---------- make a rule from what you are looking at ---------- */
+// the steady part of a narration: drop numbers, dates and reference tails
+function steadyPart(narr){
+  let s = String(narr || "").toUpperCase();
+  s = s.replace(/\b\d{6,}\b/g, " ").replace(/\b\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}\b/g, " ")
+       .replace(/\b(UPI|NEFT|RTGS|IMPS|ACH|MMT|CMS|INF)\b[-\/ ]*/g, " ")
+       .replace(/[^A-Z& ]+/g, " ").replace(/\s+/g, " ").trim();
+  const words = s.split(" ").filter(w => w.length >= 3 && !/^(DR|CR|TO|FROM|THE|AND|PVT|LTD|INDIA|BANK|TRANSFER|PAYMENT|CHARGES?)$/.test(w));
+  return words.slice(0, 3).join(" ");
+}
+function ruleFromRow(row){
+  const b = B(), co = CO(b.cid);
+  const text = steadyPart(row.narr) || (row.dec.name || "").toUpperCase().slice(0, 20);
+  return newRule({
+    name: (row.dec.name || text || "New rule").slice(0, 40),
+    when: {text: [{op: "has", v: text}], dir: row.debit ? "out" : "in", amtMin: "", amtMax: "", modes: [], acNo: "", account: "any", from: "", to: ""},
+    then: {action: "set", ledger: exactLedger(row.ledger) || "", kind: "", vtype: "", tdsNature: "", tdsAtPay: false, splits: [], narr: "", ready: true}
+  });
+}
+/* ---------- the rules screen ---------- */
+function viewRulesPanel(){
+  const b = B(), co = CO(b.cid);
+  const mine = clientRules(), firm = firmRules();
+  const line = (r, i, scope) => {
+    const p = rulePreview(r);
+    const led = ruleLedger(r, co);
+    const bad = r.then.action !== "ignore" && led && !exactLedger(led);
+    return '<tr' + (r.off ? ' class="off"' : "") + '><td class="ord">' +
+      (scope === "client" ? '<button class="icon" data-rmove="up" data-rid="' + r.id + '" title="Move up">\u2191</button><button class="icon" data-rmove="down" data-rid="' + r.id + '" title="Move down">\u2193</button>' : "") + "</td>" +
+      "<td><b>" + esc(ruleLabel(r)) + "</b>" + (r.off ? ' <span class="tag no">off</span>' : "") +
+        '<div class="nr">' + esc(ruleWhenText(r)) + "</div></td>" +
+      "<td>" + (r.then.action === "ignore" ? '<span class="tag">set aside</span>' :
+        (bad ? '<span class="tag bad">' + esc(led) + " not in Tally</span>" : esc(led || "\u2014")) +
+        ((r.then.splits || []).length ? '<div class="nr">split into ' + ((r.then.splits || []).length + 1) + " lines</div>" : "") +
+        (r.then.ready ? "" : '<div class="nr">shown for checking, not auto-ready</div>')) + "</td>" +
+      '<td class="n">' + (p.n ? "<b>" + p.n + "</b>" : "0") + '<div class="nr">now showing</div></td>' +
+      '<td class="n">' + ((r.stats && r.stats.used) || 0) + ((r.stats && r.stats.over) ? '<div class="nr bad">' + r.stats.over + " changed by hand</div>" : "") + "</td>" +
+      '<td style="white-space:nowrap"><button class="btn small" data-redit="' + r.id + '">Change</button> ' +
+        '<button class="linkbtn" data-rtoggle="' + r.id + '">' + (r.off ? "Use" : "Pause") + '</button> <button class="linkbtn" data-rdel="' + r.id + '">Delete</button></td></tr>';
+  };
+  let h = '<section class="pane"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">Rules</h2>' +
+    '<div><button class="btn small primary" data-act="ruleNew">New rule</button><button class="btn small" data-act="ruleRunNow">Apply to this statement</button></div></div>' +
+    '<p class="note" style="margin:6px 0 10px">Rules are read from the top down; the first one that fits wins. Your own choices are never overwritten by a rule.</p>';
+  h += '<div class="tblwrap"><table class="data"><thead><tr><th></th><th>Rule</th><th>Does</th><th class="n">Matches</th><th class="n">Used</th><th></th></tr></thead><tbody>' +
+    (mine.length ? mine.map((r, i) => line(r, i, "client")).join("") : '<tr><td colspan="6" class="nr">No rules for ' + esc(co.name) + " yet. Make one from any line, or press New rule.</td></tr>") +
+    (firm.length ? '<tr><td colspan="6" style="background:var(--paper)"><b>Firm-wide rules</b> \u2014 used for every client, after this client\u2019s own rules</td></tr>' + firm.map((r, i) => line(r, i, "firm")).join("") : "") +
+    "</tbody></table></div>";
+  if (!firm.length) h += '<p class="note" style="margin-top:8px">Tip: bank charges, interest, salaries and the like are the same for every client. Make those firm-wide once.</p>';
+  return h + "</section>";
+}
+function ruleWhenText(r){
+  const w = r.when || {}, bits = [];
+  (w.text || []).forEach(c => { if (String(c.v || "").trim()) bits.push({has: "contains", not: "does not contain", starts: "starts with", is: "is"}[c.op] + " \u201c" + c.v + "\u201d"); });
+  if (w.dir === "out") bits.push("money out");
+  if (w.dir === "in") bits.push("money in");
+  if ((w.modes || []).length) bits.push(w.modes.join("/"));
+  if (w.amtMin !== "" && w.amtMin != null) bits.push("at least " + INR.format(num(w.amtMin)));
+  if (w.amtMax !== "" && w.amtMax != null) bits.push("at most " + INR.format(num(w.amtMax)));
+  if (w.acNo) bits.push("account ending " + String(w.acNo).slice(-4));
+  if (w.account && w.account !== "any") bits.push("one bank account only");
+  if (w.from || w.to) bits.push("between " + (w.from ? fmtDate(w.from) : "start") + " and " + (w.to ? fmtDate(w.to) : "end"));
+  return bits.join(" \u00b7 ") || "no conditions yet";
+}
+/* ---------- writing a rule ---------- */
+async function openRuleEditor(rule, isNew){
+  const b = B(), co = CO(b.cid);
+  const accs = co.bankAccounts || [];
+  const ledgers = (b.ledgers.list || []).map(l => l.name);
+  const c0 = (rule.when.text || [])[0] || {op: "has", v: ""};
+  const c1 = (rule.when.text || [])[1] || {op: "has", v: ""};
+  const sp = (rule.then.splits || [])[0] || {ledger: "", pct: "", amt: ""};
+  const body =
+    '<div class="bk-form two"><label><span>Name this rule</span><input type="text" id="rlName" value="' + esc(rule.name) + '" placeholder="Bajaj loan EMI"></label>' +
+    '<label><span>Where it applies</span><select id="rlScope"><option value="client"' + (rule.scope === "client" ? " selected" : "") + '>Only ' + esc(co.name) + '</option><option value="firm"' + (rule.scope === "firm" ? " selected" : "") + ">Every client (firm-wide)</option></select></label></div>" +
+    '<h3 style="margin:12px 0 4px;font-size:15px">When the line\u2026</h3>' +
+    '<div class="bk-form three"><label><span>Description</span><select id="rlOp0"><option value="has"' + (c0.op === "has" ? " selected" : "") + '>contains</option><option value="starts"' + (c0.op === "starts" ? " selected" : "") + '>starts with</option><option value="is"' + (c0.op === "is" ? " selected" : "") + '>is exactly</option><option value="not"' + (c0.op === "not" ? " selected" : "") + '>does not contain</option></select></label>' +
+    '<label><span>These words</span><input type="text" id="rlV0" value="' + esc(c0.v) + '" placeholder="BAJAJFIN"></label>' +
+    '<label><span>Money</span><select id="rlDir"><option value="any"' + (rule.when.dir === "any" ? " selected" : "") + '>either way</option><option value="out"' + (rule.when.dir === "out" ? " selected" : "") + '>going out</option><option value="in"' + (rule.when.dir === "in" ? " selected" : "") + '>coming in</option></select></label></div>' +
+    '<div class="bk-form three" style="margin-top:6px"><label><span>And also (optional)</span><select id="rlOp1"><option value="has"' + (c1.op === "has" ? " selected" : "") + '>contains</option><option value="not"' + (c1.op === "not" ? " selected" : "") + '>does not contain</option></select></label>' +
+    '<label><span>These words</span><input type="text" id="rlV1" value="' + esc(c1.v) + '"></label>' +
+    '<label><span>Way of payment</span><select id="rlMode"><option value="">any</option>' + RULE_MODES.map(m => '<option value="' + m + '"' + ((rule.when.modes || [])[0] === m ? " selected" : "") + ">" + m + "</option>").join("") + "</select></label></div>" +
+    '<div class="bk-form three" style="margin-top:6px"><label><span>Amount at least</span><input type="number" id="rlMin" value="' + esc(rule.when.amtMin) + '"></label>' +
+    '<label><span>Amount at most</span><input type="number" id="rlMax" value="' + esc(rule.when.amtMax) + '"></label>' +
+    '<label><span>Bank account</span><select id="rlAcc"><option value="any">all accounts</option>' + accs.map(a => '<option value="' + a.id + '"' + (rule.when.account === a.id ? " selected" : "") + ">" + esc(a.bank + (a.last4 ? " \u2026" + a.last4 : "")) + "</option>").join("") + "</select></label></div>" +
+    '<h3 style="margin:12px 0 4px;font-size:15px">\u2026 then</h3>' +
+    '<div class="bk-form three"><label><span>Do this</span><select id="rlAction"><option value="set"' + (rule.then.action === "set" ? " selected" : "") + '>use this ledger</option><option value="ignore"' + (rule.then.action === "ignore" ? " selected" : "") + '>set the line aside</option></select></label>' +
+    '<label><span>Ledger (must exist in Tally)</span><input type="text" id="rlLedger" data-ac="1" autocomplete="off" value="' + esc(rule.then.ledger) + '" placeholder="start typing"></label>' +
+    '<label><span>or a standard ledger</span><select id="rlKind"><option value="">\u2014</option>' + RULE_KINDS.map(([k, t]) => '<option value="' + k + '"' + (rule.then.kind === k ? " selected" : "") + ">" + esc(t) + "</option>").join("") + "</select></label></div>" +
+    '<div class="bk-form three" style="margin-top:6px"><label><span>Split off (optional)</span><input type="text" id="rlSpLed" data-ac="1" autocomplete="off" value="' + esc(sp.ledger || "") + '" placeholder="Interest ledger"></label>' +
+    '<label><span>\u2026 this much</span><input type="number" id="rlSpAmt" value="' + esc(sp.amt || "") + '" placeholder="fixed amount"></label>' +
+    '<label><span>\u2026 or this %</span><input type="number" id="rlSpPct" value="' + esc(sp.pct || "") + '" placeholder="%"></label></div>' +
+    '<div class="bk-form two" style="margin-top:6px"><label><span>Narration for Tally (optional)</span><input type="text" id="rlNarr" value="' + esc(rule.then.narr) + '" placeholder="Rent for {month}"></label>' +
+    '<label><span>Voucher type</span><select id="rlVtype"><option value="">decide from the ledger</option>' + ["Payment", "Receipt", "Contra", "Journal"].map(v => '<option' + (rule.then.vtype === v ? " selected" : "") + ">" + v + "</option>").join("") + "</select></label></div>" +
+    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="rlReady"' + (rule.then.ready ? " checked" : "") + "> Mark matching lines ready to post (untick to have them shown for checking first)</label>" +
+    '<div id="rlPreview" class="bdiag" style="margin-top:10px">Fill in the words above to see what this would match.</div>';
+  const ans = await askConfirm({title: isNew ? "New rule" : "Change this rule", ok: isNew ? "Save the rule" : "Save changes", wide: true, body,
+    onReady: () => { rulePreviewLive(); ["rlV0", "rlV1", "rlOp0", "rlOp1", "rlDir", "rlMode", "rlMin", "rlMax", "rlAcc"].forEach(id => {
+      const el = document.getElementById(id); if (el){ el.addEventListener("input", rulePreviewLive); el.addEventListener("change", rulePreviewLive); } }); },
+    read: () => readRuleForm(rule)});
+  if (!ans) return null;
+  return ans.data;
+}
+function readRuleForm(base){
+  const g = id => (document.getElementById(id) || {}).value || "";
+  const r = JSON.parse(JSON.stringify(base));
+  r.name = g("rlName").trim();
+  r.scope = g("rlScope") || "client";
+  r.when.text = [{op: g("rlOp0") || "has", v: g("rlV0").trim()}, {op: g("rlOp1") || "has", v: g("rlV1").trim()}].filter(c => c.v);
+  r.when.dir = g("rlDir") || "any";
+  r.when.modes = g("rlMode") ? [g("rlMode")] : [];
+  r.when.amtMin = g("rlMin"); r.when.amtMax = g("rlMax");
+  r.when.account = g("rlAcc") || "any";
+  r.then.action = g("rlAction") || "set";
+  r.then.ledger = g("rlLedger").trim();
+  r.then.kind = g("rlKind") || "";
+  r.then.vtype = g("rlVtype") || "";
+  r.then.narr = g("rlNarr").trim();
+  r.then.ready = !!(document.getElementById("rlReady") || {}).checked;
+  const spL = g("rlSpLed").trim(), spA = g("rlSpAmt"), spP = g("rlSpPct");
+  r.then.splits = spL && (spA || spP) ? [{ledger: spL, amt: spA, pct: spP}] : [];
+  if (!r.name) r.name = (r.when.text[0] || {}).v || "Rule";
+  return r;
+}
+function rulePreviewLive(){
+  const box = document.getElementById("rlPreview");
+  if (!box) return;
+  const r = readRuleForm(newRule());
+  const p = rulePreview(r);
+  if (!(r.when.text || []).length && !r.when.amtMin && !r.when.amtMax){ box.innerHTML = "Fill in the words above to see what this would match."; return; }
+  box.innerHTML = "<b>Matches " + p.n + " of " + p.total + " lines</b> in the statement now open." +
+    (p.rows.length ? "<ul style='margin:6px 0 0 18px'>" + p.rows.map(x => "<li>" + fmtDate(x.date) + " \u00b7 " + esc(x.narr.slice(0, 70)) + " \u00b7 " + INR.format(x.debit || x.credit) + "</li>").join("") + "</ul>" : "") +
+    (p.n > 5 ? "<div class='nr'>\u2026 and " + (p.n - 5) + " more</div>" : "");
+}
+/* ---------- running the rules ---------- */
+function runRules(rows, opts){
+  const b = B(), co = CO(b.cid);
+  const st = curStmt();
+  const acc = st ? (co.bankAccounts || []).find(a => a.id === st.acctId) : null;
+  let hit = 0;
+  (rows || b.rows).forEach(r => {
+    if (r.state === "sent" || r.state === "intally") return;
+    if (r.userSet && !(opts && opts.force)) return;          // never overwrite a person's choice
+    const rule = matchRule(r, co, acc);
+    if (!rule) return;
+    applyRule(rule, r, co, acc);
+    hit++;
+  });
+  if (hit){ countRuleUse(rows || b.rows); saveBank({rows: true}); }
+  return hit;
+}
+
 function suggestAll(rows, onlyOpen){
   const b = B(), co = CO(b.cid);
   const ledgerList = Array.from(knownLedgers().values()).filter(l => !l.pending);
@@ -5206,9 +5507,14 @@ function suggestAll(rows, onlyOpen){
   ledgerList.forEach(l => { const n = String(l.acNo || "").replace(/\D/g, "").replace(/^0+/, ""); if (n.length >= 8 && !BANK_GROUPS.test(l.group || "")) acIndex.set(n, l); });
   const partyCompact = ledgerList.filter(l => !BANK_GROUPS.test(l.group || "") && !/duties|taxes|capital|reserves|provisions|suspense/i.test(l.group || "")).map(l => ({l, c: normName(l.name).replace(/ /g, "")})).filter(x => x.c.length >= 4);
   const ctx = {co, hasList: hasLedgerList() || b.newLed.length > 0, rules: b.rules, ruleMap, bills: openBills(b.cid), taken: new Set(), ledgerList, ledgerExact, simCache: new Map(), acIndex, partyCompact, salesInvs: openSalesInvoices(), takenSales: new Set()};
+  const stNow = curStmt();
+  const accNow = stNow ? (co.bankAccounts || []).find(a => a.id === stNow.acctId) : null;
   rows.forEach(r => {
     if (onlyOpen && !["attention", "suggested"].includes(r.state)) return;
     if (r.userSet && exactLedger(r.ledger)) return;
+    const rule = matchRule(r, co, accNow);          // a written rule beats every guess
+    if (rule){ applyRule(rule, r, co, accNow); return; }
+    r.ruleId = null; r.ruleNarr = "";
     const s = suggestRow(r, ctx);
     r.userSet = false;
     r.ledger = s.ledger; r.why = s.why; r.source = s.source; r.level = s.level; r.srcLabel = s.label || "";
@@ -5216,6 +5522,7 @@ function suggestAll(rows, onlyOpen){
     r.vtype = s.ledger ? vtypeFor(r, s.ledger) : (r.debit ? "Payment" : "Receipt");
     r.state = s.level === "auto" && co.bankAuto !== false ? "ready" : s.level === "none" ? "attention" : "suggested";
   });
+  countRuleUse(rows);
 }
 /* ---------- upload ---------- */
 function isBankFile(f){ return /\.(xlsx|xls|xlsm|csv|txt|pdf|jpe?g|png|webp|heic)$/i.test(f.name) || /^image\//.test(f.type); }
@@ -5505,6 +5812,7 @@ function setLedgerFor(rows, ledger, how){
   return touched.size;
 }
 function setRowLedger(row, ledger){
+  if (row && row.ruleId && exactLedger(ledger) !== row.ledger) noteOverride(row);
   if (!String(ledger || "").trim()){
     const b = B();
     b.undo = {what: "clear", label: row.dec.name || "this row", n: 1, others: 0, snaps: [rowSnapshot(row)], ruleKeys: [], oldRules: []};
@@ -5571,6 +5879,7 @@ async function applyToVisible(ledger){
   b.undo = {what: "Set " + exact + " on " + rows.length + " entries", rows: before};
   saveBank({rows: true});
   toast(rows.length + " entries set to " + exact + ".");
+  b.offerRule = {text: b.q.trim(), ledger: exact, n: rows.length, dir: rows.every(r => r.debit) ? "out" : rows.every(r => r.credit) ? "in" : "any"};
   render();
 }
 function bankVisibleRows(){
@@ -5673,7 +5982,7 @@ function bankVoucherXml(row, acc, co){
   const amount = row.debit || row.credit, out = !!row.debit;
   const tds = out && row.tdsAtPay ? r2(row.tdsAtPay) : 0;
   const party = tallyLedgerName(row.ledger);
-  const narr = (row.narr.slice(0, 400) + (row.billRef ? " | against " + row.billRef : "") + " | TDSDesk:" + fpHash(row.fp || row.id));
+  const narr = ((row.ruleNarr ? row.ruleNarr + " | " : "") + row.narr.slice(0, 400) + (row.billRef ? " | against " + row.billRef : "") + " | TDSDesk:" + fpHash(row.fp || row.id));
   const txType = row.dec.chq || row.dec.mode === "CHQ" ? "Cheque" : ["NEFT", "RTGS", "IMPS", "UPI"].includes(row.dec.mode) ? "e-Fund Transfer" : "Others";
   const inst = row.dec.chq || row.dec.utr || row.ref || "";
   const bankAlloc = sign => "<BANKALLOCATIONS.LIST>\n<DATE>" + d + "</DATE>\n<INSTRUMENTDATE>" + d + "</INSTRUMENTDATE>\n<TRANSACTIONTYPE>" + txType + "</TRANSACTIONTYPE>\n" +
@@ -5683,7 +5992,15 @@ function bankVoucherXml(row, acc, co){
     ? "<BILLALLOCATIONS.LIST>\n<NAME>" + xesc(row.billRef) + "</NAME>\n<BILLTYPE>Agst Ref</BILLTYPE>\n<AMOUNT>" + (dr ? "-" : "") + amt2(value) + "</AMOUNT>\n</BILLALLOCATIONS.LIST>\n" : "";
   let x = '<VOUCHER VCHTYPE="' + vt + '" ACTION="Create" OBJVIEW="Accounting Voucher View">\n<DATE>' + d + "</DATE>\n<EFFECTIVEDATE>" + d + "</EFFECTIVEDATE>\n<VOUCHERTYPENAME>" + vt + "</VOUCHERTYPENAME>\n" +
     "<NARRATION>" + xesc(narr) + "</NARRATION>\n<PARTYLEDGERNAME>" + xesc(party) + "</PARTYLEDGERNAME>\n<PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>\n<ISOPTIONAL>" + (co.bankOptional ? "Yes" : "No") + "</ISOPTIONAL>\n";
-  if (out){
+  const splits = (row.splits || []).filter(sp => sp.ledger && exactLedger(sp.ledger) && num(sp.amt) > 0);
+  if (out && splits.length){
+    splits.forEach(sp => { x += line(sp.ledger, true, num(sp.amt)); });
+    x += line(acc.ledger, false, amount, bankAlloc(""));
+    if (tds) x += line(row.tdsLedger || bankLedgers(co).tds, false, tds);
+  } else if (!out && splits.length){
+    x += line(acc.ledger, true, amount, bankAlloc("-"));
+    splits.forEach(sp => { x += line(sp.ledger, false, num(sp.amt)); });
+  } else if (out){
     x += line(party, true, amount + tds, billAlloc(true, amount + tds));
     x += line(acc.ledger, false, amount, bankAlloc(""));
     if (tds) x += line(row.tdsLedger || bankLedgers(co).tds, false, tds);
@@ -5763,9 +6080,10 @@ function exportBankCsv(){
 }
 /* ---------- screen ---------- */
 /* ---------- the bank screen ---------- */
+const BANK_TABS_EXTRA = [["rules", "Rules"]];
 const BANK_TABS = [["review", "To review"], ["ready", "Ready"], ["done", "Done"]];
 function tabStates(tab){ return tab === "ready" ? ["ready"] : tab === "done" ? ["sent", "intally", "ignored"] : tab === "all" ? null : ["attention", "suggested"]; }
-function bankTab(){ const b = B(); return ["review", "ready", "done", "all"].includes(b.filter) ? b.filter : "review"; }
+function bankTab(){ const b = B(); return ["review", "ready", "done", "all", "rules"].includes(b.filter) ? b.filter : "review"; }
 function tabCounts(rows){
   const c = countStates(rows);
   return {review: (c.attention || 0) + (c.suggested || 0), ready: c.ready || 0, done: (c.sent || 0) + (c.intally || 0) + (c.ignored || 0), attention: c.attention || 0, suggested: c.suggested || 0};
@@ -5848,9 +6166,15 @@ function viewBank(){
     (hasLedgerList() ? '<select data-bankacc="' + acc.id + '">' + ledgerOptions("", BANK_GROUPS) + "</select>" : '<span class="note">Import the ledger list first.</span>') + "</div>";
   // tabs
   const tab = bankTab();
-  h += '<div class="bk-bar"><div class="bk-tabs" role="tablist">' + BANK_TABS.map(([k, t]) => '<button role="tab" aria-selected="' + (tab === k) + '" data-btab="' + k + '">' + t + ' <span class="cnt">' + tc[k] + "</span></button>").join("") + "</div>" +
+  h += '<div class="bk-bar"><div class="bk-tabs" role="tablist">' + BANK_TABS.concat([]).map(([k, t]) => '<button role="tab" aria-selected="' + (tab === k) + '" data-btab="' + k + '">' + t + ' <span class="cnt">' + tc[k] + "</span></button>").join("") + "</div>" +
+    '<button role="tab" aria-selected="' + (tab === "rules") + '" data-btab="rules">Rules <span class="cnt">' + allRules().length + "</span></button>" +
     (tab === "review" ? '<label class="bk-switch"><input type="checkbox" data-bgroup' + (b.grouped ? " checked" : "") + "> Group by party</label>" : "") +
     '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search the description, party or amount" value="' + esc(b.q) + '"></div>';
+  if (b.offerRule){
+    const o = b.offerRule;
+    h += '<div class="bk-found" style="border-color:var(--ledger)"><b>Keep this as a rule?</b> Every future line containing \u201c' + esc(o.text) + '\u201d would go to <b>' + esc(o.ledger) + "</b> by itself." +
+      ' <button class="btn small primary" data-act="ruleFromBulk">Yes, make the rule</button><button class="linkbtn" data-act="ruleNoThanks">No thanks</button></div>';
+  }
   if (b.q.trim()){
     const hits = bankVisibleRows().filter(r => r.state !== "sent" && r.state !== "intally");
     h += '<div class="bk-found"><b>' + hits.length + "</b> entr" + (hits.length === 1 ? "y" : "ies") + ' match \u201c' + esc(b.q.trim()) + "\u201d" +
@@ -5858,7 +6182,8 @@ function viewBank(){
         '<button class="btn small primary" data-act="bankApplyAll">Set all ' + hits.length + "</button>" : "") +
       ' <button class="linkbtn" data-act="bankClearSearch">Clear</button></div>';
   }
-  if (tab === "review" && b.grouped) h += viewBankGroups();
+  if (tab === "rules") h += viewRulesPanel();
+  else if (tab === "review" && b.grouped) h += viewBankGroups();
   else h += bankTable(tab);
   h += "</div>";
   if (b.showSettings) h += bankSettingsHtml();
@@ -5896,11 +6221,14 @@ function bankRowHtml(r, tab){
       : r.state === "ready" ? '<span class="src ok"' + tip + ">" + esc(r.source === "you" || r.userSet ? "Set by you" : (r.srcLabel || "Confirmed")) + (r.vtype === "Contra" ? " \u00b7 Contra" : "") + (r.billRef ? " \u00b7 Bill " + esc(r.billRef) : "") + "</span>"
       : '<span class="src muted"' + tip + ">" + esc(hasLedgerList() ? "No match found" : "Import the ledger list") + "</span>";
     const perr = r.state === "ready" && r.postError ? '<span class="src bad" title="' + esc(r.postError) + '">Tally: ' + esc(r.postError) + "</span>" : "";
+    const ruleTag = r.ruleId ? '<span class="src"><button class="linkbtn" data-redit="' + r.ruleId + '">rule: ' + esc(ruleLabel(allRules().find(x => x.id === r.ruleId) || {name: "gone"})) + "</button></span>" : "";
     ledgerCell = perr + '<input type="text" class="lgbox' + cls + '" data-bled="' + r.id + '" data-fk="bled:' + r.id + '" data-keeptyped data-ac="1" autocomplete="off" value="' + esc(r.ledger) + '" placeholder="Select ledger" aria-label="Ledger">' + label +
-      (r.tdsAtPay ? '<span class="src">TDS ' + money(r.tdsAtPay) + " deducted at payment</span>" : "");
-    action = r.state === "suggested" ? '<button class="btn small primary" data-brow="accept" data-rid="' + r.id + '">Confirm</button><button class="icon" data-brow="ignore" data-rid="' + r.id + '" title="Ignore this entry" aria-label="Ignore">\u2715</button>'
-      : r.state === "ready" ? (Bridge.on() && Bridge.up() ? '<button class="btn small" data-brow="post" data-rid="' + r.id + '">Post</button> ' : "") + '<button class="linkbtn" data-brow="unready" data-rid="' + r.id + '">Undo</button>'
-      : '<button class="icon" data-brow="ignore" data-rid="' + r.id + '" title="Ignore this entry" aria-label="Ignore">\u2715</button>';
+      ruleTag + (r.tdsAtPay ? '<span class="src">TDS ' + money(r.tdsAtPay) + " deducted at payment</span>" : "") +
+      ((r.splits || []).length ? '<span class="src">split: ' + r.splits.map(sp => esc(sp.ledger) + " " + INR.format(sp.amt)).join(", ") + "</span>" : "");
+    const ruleBtn = '<button class="linkbtn" data-brow="rule" data-rid="' + r.id + '" title="Make a rule from this line">Rule</button>';
+    action = r.state === "suggested" ? '<button class="btn small primary" data-brow="accept" data-rid="' + r.id + '">Confirm</button>' + ruleBtn + '<button class="icon" data-brow="ignore" data-rid="' + r.id + '" title="Ignore this entry" aria-label="Ignore">\u2715</button>'
+      : r.state === "ready" ? (Bridge.on() && Bridge.up() ? '<button class="btn small" data-brow="post" data-rid="' + r.id + '">Post</button> ' : "") + '<button class="linkbtn" data-brow="rule" data-rid="' + r.id + '" title="Make a rule from this line">Rule</button> <button class="linkbtn" data-brow="unready" data-rid="' + r.id + '">Undo</button>'
+      : ruleBtn + '<button class="icon" data-brow="ignore" data-rid="' + r.id + '" title="Ignore this entry" aria-label="Ignore">\u2715</button>';
   } else {
     const status = r.state === "sent" ? "Posted " + (r.sentAt ? shortDate(r.sentAt.slice(0, 10)) : "") : r.state === "intally" ? "Already in Tally" + (r.tallyRef ? ": " + r.tallyRef : "") + (r.tallyHow ? " (" + r.tallyHow + ")" : "") : "Ignored";
     ledgerCell = '<span class="lgtext">' + esc(r.ledger || "\u2014") + '</span><span class="src muted">' + esc(status) + "</span>";
@@ -6183,7 +6511,7 @@ function askConfirm(o){
   return new Promise(done => {
     let box = document.getElementById("confirmBox");
     if (!box){ box = document.createElement("div"); box.id = "confirmBox"; document.body.appendChild(box); }
-    box.innerHTML = '<div class="cbx" role="dialog" aria-modal="true" aria-labelledby="cbxT"><h2 id="cbxT">' + esc(o.title) + "</h2>" +
+    box.innerHTML = '<div class="cbx' + (o.wide ? " wide" : "") + '" role="dialog" aria-modal="true" aria-labelledby="cbxT"><h2 id="cbxT">' + esc(o.title) + "</h2>" +
       '<div class="note" style="font-size:14px;line-height:1.5">' + o.body + "</div>" +
       (o.check ? '<label class="chk" style="margin-top:10px"><input type="checkbox" id="cbxCheck"> ' + esc(o.check) + "</label>" : "") +
       '<div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" data-cbx="no">Cancel</button><button class="btn ' + (o.danger ? "danger-fill" : "primary") + '" data-cbx="yes">' + esc(o.ok || "OK") + "</button></div></div>";
@@ -6197,6 +6525,7 @@ function askConfirm(o){
     const onKey = ev => { if (ev.key === "Escape"){ ev.preventDefault(); ev.stopPropagation(); finish(false); } else if (ev.key === "Enter" && !(ev.target && (ev.target.id === "cbxCheck" || ev.target.tagName === "SELECT"))){ ev.preventDefault(); ev.stopPropagation(); finish(true); } };
     document.addEventListener("keydown", onKey, true);
     box.onclick = ev => { const bt = ev.target.closest("[data-cbx]"); if (bt){ ev.stopPropagation(); finish(bt.dataset.cbx === "yes"); } else if (ev.target === box) finish(false); };
+    if (o.onReady) try { o.onReady(box); } catch (e){}
     const first = box.querySelector("input[type=text]"); const yes = box.querySelector('[data-cbx="yes"]');
     if (first){ first.focus(); first.select(); } else if (yes) yes.focus();
   });
@@ -6295,6 +6624,51 @@ function bankClick(t){
   if (t.dataset.delstmt){ deleteStatement(t.dataset.delstmt); return true; }
   if (t.dataset.gapply){ const inp = document.getElementById(t.dataset.gapply); if (inp) applyGroup(inp.dataset.gkey, inp.value); acClose(); return true; }
   if (t.hasAttribute && (t.hasAttribute("data-bselall") || t.hasAttribute("data-bsel"))) return true;
+  if (t.dataset.redit || t.dataset.rtoggle || t.dataset.rdel || t.dataset.rmove){
+    const id = t.dataset.redit || t.dataset.rtoggle || t.dataset.rdel || t.dataset.rid;
+    const inClient = clientRules().some(x => x.id === id);
+    const list = inClient ? clientRules() : firmRules();
+    const i = list.findIndex(x => x.id === id), r = list[i];
+    if (!r) return true;
+    if (t.dataset.rtoggle){ r.off = !r.off; saveRules(r.scope); runRules(null, {force: true}); toast(r.off ? "Rule paused." : "Rule in use again."); render(); return true; }
+    if (t.dataset.rdel){
+      askConfirm({title: "Delete the rule \u201c" + ruleLabel(r) + "\u201d?", ok: "Delete", body: '<p class="note">Lines already set keep their ledger. Future statements will not use this rule.</p>'}).then(a => {
+        if (!a) return;
+        list.splice(i, 1); saveRules(r.scope); toast("Rule deleted."); render();
+      });
+      return true;
+    }
+    if (t.dataset.rmove){
+      const j = t.dataset.rmove === "up" ? i - 1 : i + 1;
+      if (j < 0 || j >= list.length) return true;
+      list.splice(j, 0, list.splice(i, 1)[0]);
+      saveRules(r.scope); runRules(null, {force: true}); render();
+      return true;
+    }
+    openRuleEditor(JSON.parse(JSON.stringify(r)), false).then(nr => {
+      if (!nr) return;
+      if (nr.scope !== r.scope){ list.splice(i, 1); (nr.scope === "firm" ? firmRules() : clientRules()).unshift(nr); saveRules("firm"); saveRules("client"); }
+      else list[i] = nr;
+      saveRules(nr.scope);
+      const n = runRules(null, {force: true});
+      toast("Rule saved" + (n ? " \u00b7 " + n + " lines set" : "") + ".");
+      render();
+    });
+    return true;
+  }
+  if (t.dataset.brow === "rule"){
+    const row = bankRow(t.dataset.rid);
+    if (!row) return true;
+    openRuleEditor(ruleFromRow(row), true).then(r => {
+      if (!r) return;
+      (r.scope === "firm" ? firmRules() : clientRules()).unshift(r);
+      saveRules(r.scope);
+      const n = runRules(null, {force: true});
+      toast("Rule saved \u00b7 " + n + " lines set.");
+      render();
+    });
+    return true;
+  }
   if (t.dataset.brow === "post"){ postBankToTally([t.dataset.rid]); return true; }
   if (t.dataset.brow){
     const r = bankRow(t.dataset.rid); if (!r) return true;
@@ -6330,6 +6704,34 @@ function bankClick(t){
     case "bankFile": closeMenus(); exportBankXml(); return true;
     case "bankDismissMoved": b.moved = null; render(); return true;
     case "bankOpenMoved": { const m = b.moved; b.moved = null; if (m){ openCompany(m.cid).then(() => { S.tab = "bank"; render(); }); } return true; }
+    case "ruleNew": {
+      openRuleEditor(newRule(), true).then(r => {
+        if (!r) return;
+        (r.scope === "firm" ? firmRules() : clientRules()).unshift(r);
+        saveRules(r.scope);
+        const n = runRules(null, {force: false});
+        toast("Rule saved" + (n ? " \u00b7 " + n + " lines set" : "") + ".");
+        render();
+      });
+      return true;
+    }
+    case "ruleNoThanks": { B().offerRule = null; render(); return true; }
+    case "ruleFromBulk": {
+      const o = B().offerRule; if (!o) return true;
+      B().offerRule = null;
+      const r0 = newRule({name: o.ledger, when: {text: [{op: "has", v: o.text}], dir: o.dir, amtMin: "", amtMax: "", modes: [], acNo: "", account: "any", from: "", to: ""},
+        then: {action: "set", ledger: o.ledger, kind: "", vtype: "", tdsNature: "", tdsAtPay: false, splits: [], narr: "", ready: true}});
+      openRuleEditor(r0, true).then(r => {
+        if (!r){ render(); return; }
+        (r.scope === "firm" ? firmRules() : clientRules()).unshift(r);
+        saveRules(r.scope);
+        const n = runRules(null, {force: false});
+        toast("Rule saved \u00b7 future statements will follow it" + (n ? " \u00b7 " + n + " set now" : "") + ".");
+        render();
+      });
+      return true;
+    }
+    case "ruleRunNow": { const n = runRules(null, {force: true}); toast(n ? n + " lines set by your rules." : "No line matched a rule."); render(); return true; }
     case "bankApplyAll": applyToVisible((B().allLed || "").trim()); return true;
     case "bankClearSearch": { const b2 = B(); b2.q = ""; b2.allLed = ""; render(); return true; }
     case "bankPost": postBankToTally(); return true;
