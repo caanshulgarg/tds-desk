@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.5.2'
+$BridgeVersion = '1.6.0'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -43,6 +43,8 @@ $defaults = [ordered]@{
   TallyPorts      = 'auto'
   OnlyMySession   = $true
   PairWindowMin   = 15
+  GentleMs        = 150
+  StatusCacheSec  = 30
   FallbackPorts   = @(9000, 9001, 9002, 9003, 9004, 9005)
   TallyTimeoutSec = 120
   Key             = ''
