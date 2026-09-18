@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.5.0'
+$BridgeVersion = '1.5.1'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -51,14 +51,20 @@ $defaults = [ordered]@{
 }
 $needSave = $false
 if (Test-Path $ConfigPath) {
-  $loaded = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-  $known = @($defaults.Keys)
-  foreach ($p in $loaded.PSObject.Properties) { $defaults[$p.Name] = $p.Value }
-  # settings added in a newer version are written into an older settings file
-  foreach ($k in $known) { if (-not $loaded.PSObject.Properties.Name.Contains($k)) { $needSave = $true } }
+  try {
+    $loaded = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $known = @($defaults.Keys)
+    $have = @()
+    foreach ($p in $loaded.PSObject.Properties) { $defaults[$p.Name] = $p.Value; $have += $p.Name }
+    # settings added in a newer version are written into an older settings file
+    foreach ($k in $known) { if ($have -notcontains $k) { $needSave = $true } }
+  } catch {
+    Write-Host ('  The settings file could not be read (' + $_.Exception.Message + '). Starting with the standard settings.') -ForegroundColor Yellow
+    $needSave = $true
+  }
 }
 if (-not $defaults.Key) { $defaults.Key = New-BridgeKey; $needSave = $true }
-if ($needSave) { ($defaults | ConvertTo-Json) | Set-Content -Path $ConfigPath -Encoding UTF8 }
+if ($needSave) { try { ($defaults | ConvertTo-Json) | Set-Content -Path $ConfigPath -Encoding UTF8 } catch { } }
 $Cfg = [pscustomobject]$defaults
 
 function Write-Log([string]$msg) {
