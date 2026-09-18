@@ -1,4 +1,4 @@
-TDS Desk - Tally Bridge 1.5.2
+TDS Desk - Tally Bridge 1.6
 Garg Shekhar & Company
 
 THE EASY WAY (recommended)

@@ -85,8 +85,13 @@ function Get-TextFromBytes([byte[]]$bytes) {
   return [Text.Encoding]::UTF8.GetString($bytes)
 }
 
+function Wait-Gentle {
+  $ms = [int]$Cfg.GentleMs
+  if ($ms -gt 0) { Start-Sleep -Milliseconds $ms }
+}
 function Invoke-Tally([int]$TallyPort, [string]$Xml, [int]$TimeoutSec) {
   if (-not $TimeoutSec) { $TimeoutSec = [int]$Cfg.TallyTimeoutSec }
+  Wait-Gentle
   $req = [System.Net.HttpWebRequest]::Create("http://$($Cfg.TallyHost):$TallyPort")
   $req.Method = 'POST'
   $req.ContentType = 'text/xml;charset=utf-8'
@@ -322,7 +327,9 @@ $script:CompanyCache = $null
 $script:CompanyCacheAt = [datetime]::MinValue
 $script:PlanMode = ''
 function Get-OpenCompanies([switch]$Fresh) {
-  if (-not $Fresh -and $script:CompanyCache -and ((Get-Date) - $script:CompanyCacheAt).TotalSeconds -lt 30) { return $script:CompanyCache }
+  $cacheSec = [int]$Cfg.StatusCacheSec
+  if ($cacheSec -lt 5) { $cacheSec = 5 }
+  if (-not $Fresh -and $script:CompanyCache -and ((Get-Date) - $script:CompanyCacheAt).TotalSeconds -lt $cacheSec) { return $script:CompanyCache }
   $plan = Get-PortPlan
   $script:PlanMode = $plan.mode
   $sessions = @()
@@ -605,6 +612,7 @@ function Invoke-Import($payload) {
   if ($payload.port) { $pref = [int]$payload.port }
   $port = Find-CompanyPort $company $pref
   $results = @()
+  $pending = @()
   $groups = @(@{ kind = 'master'; report = 'All Masters'; items = @($payload.masters) }, @{ kind = 'voucher'; report = 'Vouchers'; items = @($payload.vouchers) })
   foreach ($g in $groups) {
     foreach ($it in $g.items) {
@@ -620,21 +628,52 @@ function Invoke-Import($payload) {
         Write-Log ("    Tally replied: " + (($rawReply -replace '\s+', ' ') -replace '^.*?(<IMPORTRESULT>|<RESPONSE>)', '$1').Substring(0, [Math]::Min(400, (($rawReply -replace '\s+', ' ') -replace '^.*?(<IMPORTRESULT>|<RESPONSE>)', '$1').Length)))
         $r['id'] = $it.id; $r['kind'] = $g.kind; $r['company'] = $company; $r['port'] = $port
         if ($r.ok -and $g.kind -eq 'voucher') {
-          $c = Confirm-Voucher -Port $port -Company $company -Xml $xml -VchId $r.lastVchId
-          $r['verified'] = $c.found
-          $r['verifyNote'] = [string]$c.note
-          Write-Log ("    read-back: " + $(if ($c.found -eq $true) { 'found (' + $c.how + ')' } elseif ($c.found -eq $false) { 'NOT FOUND' } else { 'could not tell' }) + ' - ' + $c.note)
-          if ($c.found -eq $true) { $r['optional'] = [bool]$c.optional; $r['vchNumber'] = [string]$c.number; $r['vchType'] = [string]$c.type }
-          elseif ($c.found -eq $false) {
-            $r.ok = $false
-            $r.message = "Tally replied 'created', but the voucher is not in '" + $company + "' on " + $c.date + ". It was not marked as posted. Check the Day Book in Tally before posting it again."
-          }
+          # confirmed later, for the whole batch at once
+          $r['xmlSent'] = $xml
+          $pending += $r
         }
         $results += $r
         Write-Log ("  " + $g.kind + " " + $it.id + ": " + $(if ($r.ok) { 'created' + $(if ($r['verified'] -eq $true) { ' and found in Tally' + $(if ($r['optional']) { ' (Optional voucher)' } else { '' }) } else { ' (not read back)' }) } else { 'FAILED ' + $r.message }))
       } catch {
         $results += [ordered]@{ id = $it.id; kind = $g.kind; ok = $false; message = 'Tally did not answer: ' + $_.Exception.Message }
       }
+    }
+  }
+  # ---- one read-back for everything just posted ----
+  if ($pending.Count -gt 0) {
+    $dates = @()
+    foreach ($r in $pending) { $m = [regex]::Match([string]$r.xmlSent, '<DATE>(\d{8})</DATE>'); if ($m.Success) { $dates += $m.Groups[1].Value } }
+    $dates = @($dates | Sort-Object -Unique)
+    $heads = @()
+    if ($dates.Count -gt 0) {
+      $from = $dates[0]; $to = $dates[$dates.Count - 1]
+      foreach ($try in @('list', 'daybook')) {
+        try {
+          $heads = if ($try -eq 'list') { Get-VoucherHeads -Port $port -Company $company -From $from -To $to } else { Get-DayBookHeads -Port $port -Company $company -From $from -To $to }
+          if ($null -eq $heads) { $heads = @() }
+          if (@($heads).Count -gt 0) { break }
+        } catch { $heads = @() }
+      }
+      Write-Log ("  read-back for the batch: " + @($heads).Count + " vouchers listed for " + $from + " to " + $to)
+    }
+    $seen = @{}
+    foreach ($h in $heads) { if ($h.narration) { $seen[[string]$h.narration] = $h } }
+    foreach ($r in $pending) {
+      $tag = [regex]::Match([string]$r.xmlSent, 'TDSDesk:[A-Za-z0-9._-]+')
+      $hit = $null
+      if ($tag.Success) { foreach ($h in $heads) { if ([string]$h.narration -like ('*' + $tag.Value + '*')) { $hit = $h; break } } }
+      if (-not $hit -and $r.lastVchId) { foreach ($h in $heads) { if ($h.masterId -eq $r.lastVchId) { $hit = $h; break } } }
+      if ($hit) {
+        $r['verified'] = $true; $r['optional'] = ([string]$hit.optional -match '^yes$'); $r['vchNumber'] = [string]$hit.number; $r['vchType'] = [string]$hit.type
+      } elseif (@($heads).Count -gt 0) {
+        $r['verified'] = $false
+        $r.ok = $false
+        $r.message = "Tally replied 'created', but the voucher is not in '" + $company + "'. It was not marked as posted. Check the Day Book in Tally before posting it again."
+      } else {
+        $r['verified'] = $null
+        $r['verifyNote'] = 'Tally listed no vouchers for those dates'
+      }
+      $r.Remove('xmlSent')
     }
   }
   $okCount = @($results | Where-Object { $_.ok }).Count
