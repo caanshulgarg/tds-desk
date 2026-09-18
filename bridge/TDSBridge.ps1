@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.4.2'
+$BridgeVersion = '1.5.0'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -42,20 +42,23 @@ $defaults = [ordered]@{
   TallyHost       = '127.0.0.1'
   TallyPorts      = 'auto'
   OnlyMySession   = $true
+  PairWindowMin   = 15
   FallbackPorts   = @(9000, 9001, 9002, 9003, 9004, 9005)
   TallyTimeoutSec = 120
   Key             = ''
   LogFile         = (Join-Path $PSScriptRoot 'tds-bridge.log')
   AllowImport     = $true
 }
+$needSave = $false
 if (Test-Path $ConfigPath) {
   $loaded = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+  $known = @($defaults.Keys)
   foreach ($p in $loaded.PSObject.Properties) { $defaults[$p.Name] = $p.Value }
+  # settings added in a newer version are written into an older settings file
+  foreach ($k in $known) { if (-not $loaded.PSObject.Properties.Name.Contains($k)) { $needSave = $true } }
 }
-if (-not $defaults.Key) {
-  $defaults.Key = New-BridgeKey
-  ($defaults | ConvertTo-Json) | Set-Content -Path $ConfigPath -Encoding UTF8
-}
+if (-not $defaults.Key) { $defaults.Key = New-BridgeKey; $needSave = $true }
+if ($needSave) { ($defaults | ConvertTo-Json) | Set-Content -Path $ConfigPath -Encoding UTF8 }
 $Cfg = [pscustomobject]$defaults
 
 function Write-Log([string]$msg) {
@@ -732,6 +735,16 @@ function Invoke-Client($client) {
 
   if ($method -eq 'OPTIONS') { Send-Response $stream 204 '' $origin; return }
   if ($path -eq '/ping') { Send-Response $stream 200 (ConvertTo-JsonText ([ordered]@{ ok = $true; bridge = 'TDS Desk Tally Bridge'; version = $BridgeVersion })) $origin; return }
+  # TDS Desk on this same computer may fetch the key itself for a while after the bridge starts
+  if ($path -eq '/pair') {
+    if ((Get-Date) -le $script:PairUntil) {
+      Write-Log 'TDS Desk on this computer connected itself (no key typed).'
+      Send-Response $stream 200 (ConvertTo-JsonText ([ordered]@{ ok = $true; key = $Cfg.Key; computer = $env:COMPUTERNAME; user = $env:USERNAME; version = $BridgeVersion })) $origin
+    } else {
+      Send-Response $stream 403 (ConvertTo-JsonText ([ordered]@{ ok = $false; error = 'The connect window has closed. Start the bridge again (Start-TDS-Bridge), then press Connect in TDS Desk within ' + $Cfg.PairWindowMin + ' minutes.' })) $origin
+    }
+    return
+  }
 
   $key = ''
   if ($headers.ContainsKey('x-bridge-key')) { $key = $headers['x-bridge-key'] }
@@ -813,6 +826,9 @@ Show-Diagnosis
 Write-Host ''
 Write-Host ('  READY - the bridge is running. Waiting for TDS Desk at http://127.0.0.1:' + $Cfg.Port) -ForegroundColor Green
 if ($script:PlanMode -eq 'fallback') { Write-Log 'Windows did not say which Tally belongs to you; ports from the settings are used. Choose your Tally in TDS Desk.' }
+$script:PairUntil = (Get-Date).AddMinutes([int]$Cfg.PairWindowMin)
+Write-Host ('  TDS Desk on this computer can connect by itself until ' + $script:PairUntil.ToString('HH:mm') + ' - no key to copy.') -ForegroundColor Green
+Write-Host ''
 $lastCheck = Get-Date
 while ($true) {
   while (-not $listener.Pending()) {
