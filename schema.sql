@@ -1,0 +1,3 @@
+-- TDS Desk database (Supabase project: tds-desk, ap-south-1)
+-- Applied on 18 Sept 2026. Kept here so the database can be rebuilt or reviewed.
+-- (full text of the migration applied to the project)
