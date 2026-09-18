@@ -4,7 +4,7 @@ Pre-Tally automation for Garg Shekhar & Company: reads purchase bills, bank stat
 sales invoices, applies TDS and GST rules, and posts the entries into TallyPrime.
 
 ## Open the app
-- **Hosted:** https://<your-github-username>.github.io/tds-desk/ (this repository, GitHub Pages)
+- **Hosted:** https://caanshulgarg.github.io/tds-desk/ (this repository, GitHub Pages)
 - **Offline copy:** download `index.html` and open it in Chrome or Edge. Everything works without internet,
   apart from the firm account and Claude reading.
 
