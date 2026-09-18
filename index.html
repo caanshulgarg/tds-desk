@@ -234,6 +234,8 @@ html{scroll-padding-bottom:150px}
 .bk-tabs button[aria-selected=true]{background:var(--sheet);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
 .bk-tabs .cnt{display:inline-block;min-width:20px;padding:0 6px;border-radius:10px;background:var(--rule);font-size:12px;margin-left:4px;color:var(--ink)}
 .bk-switch{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted);cursor:pointer}
+.bk-found{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 0;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;background:var(--sheet);font-size:13.5px}
+.bk-allled{height:30px;min-width:220px;border:1px solid var(--rule);border-radius:6px;padding:0 8px;font:inherit;background:var(--paper);color:var(--ink)}
 .bk-search{margin-left:auto;min-width:240px;height:34px;padding:0 10px;border:1px solid var(--rule);border-radius:8px;font:inherit;background:var(--sheet);color:var(--ink)}
 .bk-tablewrap{background:var(--sheet);border:1px solid var(--rule);border-radius:10px;overflow-x:auto}
 .bk-table{width:100%;border-collapse:collapse;font-size:14px}
@@ -536,7 +538,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 46 (settings in tiles, keys only for the administrator)";
+const APP_VERSION = "18 Sep 2026 · build 47 (search and set all, ledgers created in Tally at once)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -5554,6 +5556,23 @@ function bulkAction(kind, ledger){
   b.sel.clear();
   render();
 }
+// set the same ledger on every row now on screen (after a search)
+async function applyToVisible(ledger){
+  const b = B(), rows = bankVisibleRows().filter(r => r.state !== "sent" && r.state !== "intally");
+  const exact = exactLedger(ledger);
+  if (!exact){ toast("\u201c" + ledger + "\u201d is not a ledger in Tally. Choose one from the list, or create it."); return; }
+  if (!rows.length){ toast("No entries are showing."); return; }
+  const a = await askConfirm({title: "Use \u201c" + exact + "\u201d for " + rows.length + " entries?", ok: "Set them all",
+    body: '<p class="note">These are the entries now showing' + (b.q.trim() ? ' for \u201c' + esc(b.q.trim()) + '\u201d' : "") + ". Entries already sent to Tally are left alone.</p>"});
+  if (!a) return;
+  const before = rows.map(r => ({id: r.id, ledger: r.ledger, state: r.state, userSet: r.userSet}));
+  rows.forEach(r => { r.ledger = exact; r.userSet = true; if (r.state === "attention" || r.state === "suggested") r.state = "ready"; });
+  learnRows(rows, "set");
+  b.undo = {what: "Set " + exact + " on " + rows.length + " entries", rows: before};
+  saveBank({rows: true});
+  toast(rows.length + " entries set to " + exact + ".");
+  render();
+}
 function bankVisibleRows(){
   const b = B();
   const q = b.q.trim().toLowerCase();
@@ -5612,6 +5631,27 @@ async function askClaudeForLedgers(){
   } catch (e){ toast("Claude could not suggest ledgers: " + errCopy(e && e.code)); }
   b.busy = ""; render();
 }
+// send a newly made ledger to Tally right away, so both sides match
+async function pushNewLedger(name){
+  const b = B(), co = CO(b.cid);
+  const led = (b.newLed || []).find(l => l.name === name);
+  if (!led || led.sent) return false;
+  if (!bridgeLive(co)) return false;
+  try {
+    const j = await Bridge.call("/import", {company: Bridge.openFor(co).name, masters: [{id: "led:" + led.name, xml: ledgerMasterXml(led)}], vouchers: []}, 120000);
+    const r = [].concat(j.results || [])[0];
+    if (r && r.ok){
+      led.sent = true; led.sentAt = new Date().toISOString();
+      saveBank({newLed: true});
+      await syncLedgersFromTally(true);
+      toast("\u201c" + name + "\u201d created in Tally.");
+      render();
+      return true;
+    }
+    toast("Tally did not accept the new ledger: " + plainMsg(r && r.message));
+  } catch (e){ toast("Could not create it in Tally now: " + e.message + ". It will go with the next posting."); }
+  return false;
+}
 function createLedger(name, group, pan, gstin, acNo, ifsc){
   const b = B();
   name = name.trim();
@@ -5623,6 +5663,7 @@ function createLedger(name, group, pan, gstin, acNo, ifsc){
   b.newLed.push({name, group: group || "Sundry Creditors", pan: (pan || "").toUpperCase(), gstin: (gstin || "").toUpperCase(), acNo: acNo || "", ifsc: (ifsc || "").toUpperCase(), at: new Date().toISOString(), sent: false});
   saveBank({newLed: true});
   if (near) toast("Created. Note: \u201c" + near.l.name + "\u201d looks similar; make sure it is not the same party.");
+  if (bridgeLive(CO(b.cid))) pushNewLedger(name);
   return true;
 }
 /* ---------- Tally XML ---------- */
@@ -5809,7 +5850,14 @@ function viewBank(){
   const tab = bankTab();
   h += '<div class="bk-bar"><div class="bk-tabs" role="tablist">' + BANK_TABS.map(([k, t]) => '<button role="tab" aria-selected="' + (tab === k) + '" data-btab="' + k + '">' + t + ' <span class="cnt">' + tc[k] + "</span></button>").join("") + "</div>" +
     (tab === "review" ? '<label class="bk-switch"><input type="checkbox" data-bgroup' + (b.grouped ? " checked" : "") + "> Group by party</label>" : "") +
-    '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search" value="' + esc(b.q) + '"></div>';
+    '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search the description, party or amount" value="' + esc(b.q) + '"></div>';
+  if (b.q.trim()){
+    const hits = bankVisibleRows().filter(r => r.state !== "sent" && r.state !== "intally");
+    h += '<div class="bk-found"><b>' + hits.length + "</b> entr" + (hits.length === 1 ? "y" : "ies") + ' match \u201c' + esc(b.q.trim()) + "\u201d" +
+      (hits.length ? ' \u00b7 <span class="muted">set them all to</span> <input type="text" class="bk-allled" data-allled data-fk="allled" data-ac="1" autocomplete="off" placeholder="a ledger from Tally" value="' + esc(b.allLed || "") + '">' +
+        '<button class="btn small primary" data-act="bankApplyAll">Set all ' + hits.length + "</button>" : "") +
+      ' <button class="linkbtn" data-act="bankClearSearch">Clear</button></div>';
+  }
   if (tab === "review" && b.grouped) h += viewBankGroups();
   else h += bankTable(tab);
   h += "</div>";
@@ -6282,6 +6330,8 @@ function bankClick(t){
     case "bankFile": closeMenus(); exportBankXml(); return true;
     case "bankDismissMoved": b.moved = null; render(); return true;
     case "bankOpenMoved": { const m = b.moved; b.moved = null; if (m){ openCompany(m.cid).then(() => { S.tab = "bank"; render(); }); } return true; }
+    case "bankApplyAll": applyToVisible((B().allLed || "").trim()); return true;
+    case "bankClearSearch": { const b2 = B(); b2.q = ""; b2.allLed = ""; render(); return true; }
     case "bankPost": postBankToTally(); return true;
     case "bankBulkPost": { const ids = b.rows.filter(r => b.sel.has(r.id) && r.state === "ready").map(r => r.id); b.sel.clear(); postBankToTally(ids); return true; }
     case "bankReportOk": b.postReport = null; render(); return true;
@@ -6373,6 +6423,7 @@ document.addEventListener("keydown", ev => {
 function bankInput(t){
   const b = B(); if (!b) return false;
   if (t.hasAttribute("data-bankq")){ b.q = t.value; b.sticky.clear(); later("bq", render, 250); return true; }
+  if (t.hasAttribute("data-allled")){ b.allLed = t.value; return true; }
   return false;
 }
 
