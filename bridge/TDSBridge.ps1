@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.5.1'
+$BridgeVersion = '1.5.2'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {

@@ -14,6 +14,7 @@ echo   needed. To remove it later, run this file again and press R.
 echo.
 set "DEST=%LOCALAPPDATA%\TDS Desk Bridge"
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+set "PORT=9100"
 if /I "%~1"=="/remove" goto remove
 choice /C IRQ /N /M "  Press I to install, R to remove, Q to quit: "
 if errorlevel 3 goto done
@@ -45,19 +46,30 @@ rem  a shortcut to show the bridge window when someone wants to look at it
 >> "%DEST%\Show bridge window.bat" echo pause
 
 echo   Starting the bridge...
-taskkill /F /IM wscript.exe /FI "WINDOWTITLE eq TDS Desk*" >nul 2>&1
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" | Where-Object { $_.CommandLine -like '*TDSBridge.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-start "" wscript.exe "%DEST%\run-hidden.vbs"
 
-echo   Waiting for it to answer...
-set TRIES=0
-:wait
-set /A TRIES+=1
-powershell -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:9100/ping'; if ($r.Content -match 'ok') { exit 0 } } catch { }; exit 1" >nul 2>&1
+rem  way 1: the hidden starter that also restarts it
+start "" wscript.exe "%DEST%\run-hidden.vbs"
+call :waitfor 10
 if not errorlevel 1 goto ready
-if %TRIES% GEQ 20 goto slow
+
+rem  way 2: start PowerShell hidden directly (some servers block wscript)
+echo   Trying another way to start it...
+start "TDS Desk Tally Bridge" /MIN powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DEST%\TDSBridge.ps1"
+call :waitfor 10
+if not errorlevel 1 goto ready
+goto slow
+
+:waitfor
+set /A TRIES=0
+:waitloop
+set /A TRIES+=1
+rem  a plain socket test, so proxies and firewall rules for web traffic do not confuse it
+powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', %PORT%); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+if not errorlevel 1 exit /b 0
+if %TRIES% GEQ %1 exit /b 1
 ping -n 2 127.0.0.1 >nul
-goto wait
+goto waitloop
 
 :ready
 echo.
@@ -80,16 +92,16 @@ goto done
 
 :slow
 echo.
-echo   The bridge did not answer, so it is being started here in this window.
-echo   Read the lines below - red ones matter - and send them if it keeps failing.
-echo   While this window stays open the bridge is running, so you can use TDS Desk.
+echo   The bridge did not answer. Checking what is in the way...
+powershell -NoProfile -Command "$p = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) { $pr = Get-Process -Id $p.OwningProcess -ErrorAction SilentlyContinue; Write-Host ('   Port %PORT% is already used by ' + $pr.ProcessName + ' (process ' + $p.OwningProcess + ').') } else { Write-Host '   Port %PORT% is free, so the bridge itself did not start.' }; Write-Host ('   Windows PowerShell version: ' + $PSVersionTable.PSVersion)"
 echo.
+echo   Starting it here in this window so you can see why.
+echo   While this window stays open the bridge is running, so TDS Desk can be used.
+echo   Red lines matter - send them if it keeps failing.
+echo   (If nothing appears at all, antivirus may be blocking PowerShell scripts.)
 echo   ----------------------------------------------------------
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DEST%\TDSBridge.ps1" -Diagnose
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DEST%\TDSBridge.ps1"
 echo   ----------------------------------------------------------
-echo.
-echo   If it says "Could not start on port", a bridge is already running:
-echo   close it (or restart Windows) and run this setup again.
 echo.
 pause
 goto done
@@ -120,7 +132,7 @@ exit /b
 ::Rm9yZWdyb3VuZENvbG9yIFJlZA0KICBXcml0ZS1Ib3N0ICdTZW5kIHRoaXMgbWVzc2FnZSAob3IgdGRzLWJyaWRnZS1jb25zb2xlLnR4dCkgdG8gc3VwcG9y
 ::dC4nDQogIHRyeSB7IEFkZC1Db250ZW50IC1QYXRoIChKb2luLVBhdGggJFBTU2NyaXB0Um9vdCAndGRzLWJyaWRnZS5sb2cnKSAtVmFsdWUgKChHZXQtRGF0
 ::ZSAtRm9ybWF0ICd5eXl5LU1NLWRkIEhIOm1tOnNzJykgKyAnICAnICsgJHN0b3BNc2cpIH0gY2F0Y2ggeyB9DQogIHRyeSB7IFN0b3AtVHJhbnNjcmlwdCB8
-::IE91dC1OdWxsIH0gY2F0Y2ggeyB9DQogIGJyZWFrDQp9DQokQnJpZGdlVmVyc2lvbiA9ICcxLjUuMScNCg0KIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0t
+::IE91dC1OdWxsIH0gY2F0Y2ggeyB9DQogIGJyZWFrDQp9DQokQnJpZGdlVmVyc2lvbiA9ICcxLjUuMicNCg0KIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0t
 ::LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0gc2V0dGluZ3MNCmZ1bmN0aW9uIE5ldy1CcmlkZ2VLZXkgew0KICAkY2hhcnMgPSAn
 ::QUJDREVGR0hKS0xNTlBRUlNUVVZXWFlaYWJjZGVmZ2hpamttbm9wcXJzdHV2d3h5ejIzNDU2Nzg5Jy5Ub0NoYXJBcnJheSgpDQogICRybmcgPSBbU3lzdGVt
 ::LlNlY3VyaXR5LkNyeXB0b2dyYXBoeS5SYW5kb21OdW1iZXJHZW5lcmF0b3JdOjpDcmVhdGUoKQ0KICAkYnl0ZXMgPSBOZXctT2JqZWN0IGJ5dGVbXSAyNA0K
