@@ -540,7 +540,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 48 (written rules for bank entries)";
+const APP_VERSION = "18 Sep 2026 · build 49 (rules suggested and copied across clients)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -5364,6 +5364,84 @@ function ruleFromRow(row){
     then: {action: "set", ledger: exactLedger(row.ledger) || "", kind: "", vtype: "", tdsNature: "", tdsAtPay: false, splits: [], narr: "", ready: true}
   });
 }
+/* ---------- rules the app works out for you ---------- */
+// group past decisions by their steady wording, and propose a rule where the choice was consistent
+function suggestRules(){
+  const b = B(), co = CO(b.cid);
+  const groups = new Map();
+  Object.values((b.hist && b.hist.rows) || {}).forEach(h => {
+    if (!h || !h.l) return;
+    const text = steadyPart(h.n || h.t || "");
+    if (!text || text.length < 3) return;
+    const key = text + "|" + (h.d || "any");
+    const g = groups.get(key) || {text, dir: h.d || "any", n: 0, leds: {}, sample: h.n || h.t || ""};
+    g.n++; g.leds[h.l] = (g.leds[h.l] || 0) + 1;
+    groups.set(key, g);
+  });
+  // words too general to be a rule on their own
+  const TOO_BROAD = /^(gst|tax|tds|upi|neft|rtgs|imps|ach|chq|cash|bank|charges?|payment|transfer|credit|debit|interest|fee|emi|loan|salary|refund|reversal|misc|other)$/i;
+  const out = [];
+  groups.forEach(g => {
+    const words = g.text.split(" ").filter(Boolean);
+    if (words.length === 1 && (TOO_BROAD.test(words[0]) || words[0].length < 5)) return;   // one common word is not a rule
+    const best = Object.entries(g.leds).sort((a, c) => c[1] - a[1])[0];
+    if (!best) return;
+    const [ledger, hits] = best;
+    if (g.n < 3) return;                                   // seen at least three times
+    if (hits / g.n < 0.8) return;                          // and the choice was consistent
+    if (!exactLedger(ledger)) return;                      // and that ledger is really in Tally
+    const probe = {narr: g.text, ref: "", date: "", debit: g.dir === "out" ? 1 : 0, credit: g.dir === "in" ? 1 : 0, dec: {name: g.sample, mode: ""}};
+    if (matchRule(probe, co, null)) return;                // a rule already covers this
+    out.push({text: g.text, dir: g.dir, ledger: exactLedger(ledger), n: g.n, agree: Math.round(hits / g.n * 100), sample: g.sample});
+  });
+  return out.sort((a, c) => c.n - a.n).slice(0, 25);
+}
+function viewSuggestions(){
+  const list = S.ruleSuggest;
+  if (!list) return '<div class="row" style="margin-top:10px"><button class="btn small" data-act="ruleFind">Look for rules in what we have done before</button></div>';
+  if (!list.length) return '<p class="note" style="margin-top:10px">Nothing worth a rule yet \u2014 the same wording has to be booked to the same ledger at least three times. <button class="linkbtn" data-act="ruleFindClose">Hide</button></p>';
+  return '<div class="bdiag" style="margin-top:12px"><b>' + list.length + " rule" + (list.length === 1 ? "" : "s") + " we can make from what you have already done</b>" +
+    '<div class="tblwrap" style="margin-top:6px"><table class="data"><thead><tr><th class="ck"><input type="checkbox" data-sugall checked></th><th>When the line says</th><th>Money</th><th>Use this ledger</th><th class="n">Done before</th></tr></thead><tbody>' +
+    list.map((s, i) => '<tr><td class="ck"><input type="checkbox" data-sug="' + i + '"' + (s.off ? "" : " checked") + "></td>" +
+      "<td><b>" + esc(s.text) + '</b><div class="nr">' + esc(String(s.sample).slice(0, 60)) + "</div></td>" +
+      "<td>" + (s.dir === "out" ? "going out" : s.dir === "in" ? "coming in" : "either") + "</td>" +
+      "<td>" + esc(s.ledger) + "</td>" +
+      '<td class="n">' + s.n + " times" + (s.agree < 100 ? '<div class="nr">' + s.agree + "% the same</div>" : "") + "</td></tr>").join("") +
+    '</tbody></table></div><div class="row" style="margin-top:8px"><button class="btn small primary" data-act="ruleMakeSug">Make the ticked rules</button><button class="btn small" data-act="ruleFindClose">Not now</button></div></div>';
+}
+/* ---------- the same rules for your other clients ---------- */
+async function copyRulesTo(rules){
+  if (!rules.length){ toast("Choose at least one rule."); return; }
+  const others = Object.values(S.companies).filter(c => c.id !== S.bank.cid).sort((a, b2) => a.name.localeCompare(b2.name));
+  if (!others.length){ toast("There is only one client at the moment."); return; }
+  const fixed = rules.filter(r => r.then.ledger && !r.then.kind).length;
+  const ans = await askConfirm({title: "Copy " + rules.length + " rule" + (rules.length === 1 ? "" : "s") + " to other clients", ok: "Copy the rules", wide: true,
+    body: (fixed ? '<p class="bk-warn">' + fixed + " of these name a ledger directly. In a client whose Tally has no ledger of that name, matching lines will simply wait in To review \u2014 nothing wrong is posted.</p>" : "") +
+      '<p class="note">Rules are added at the top of each client\u2019s list. Nothing already decided is changed.</p>' +
+      '<div class="row" style="margin:6px 0"><button class="btn small" type="button" id="cpAll">Tick all</button><button class="btn small" type="button" id="cpNone">Untick all</button></div>' +
+      '<div style="max-height:320px;overflow:auto;border:1px solid var(--rule);border-radius:8px;padding:8px">' +
+      others.map(c => '<label class="chk"><input type="checkbox" class="cpCo" value="' + c.id + '"> ' + esc(c.name) + "</label>").join("") + "</div>",
+    onReady: box => {
+      const set = v => box.querySelectorAll(".cpCo").forEach(x => { x.checked = v; });
+      const a = box.querySelector("#cpAll"), n = box.querySelector("#cpNone");
+      if (a) a.onclick = () => set(true);
+      if (n) n.onclick = () => set(false);
+    },
+    read: () => ({ids: Array.from(document.querySelectorAll(".cpCo")).filter(x => x.checked).map(x => x.value)})});
+  if (!ans) return;
+  const ids = ans.data.ids;
+  if (!ids.length){ toast("No client was ticked."); return; }
+  let done = 0;
+  for (const cid of ids){
+    const have = (await BankDB.get("wrules:" + cid)) || [];
+    const copies = rules.map(r => Object.assign(JSON.parse(JSON.stringify(r)), {id: uid("rl"), scope: "client", stats: {used: 0, over: 0, lastAt: ""}, copiedFrom: CO(S.bank.cid).name}));
+    await BankDB.set("wrules:" + cid, copies.concat(have));
+    done++;
+  }
+  toast(rules.length + " rule" + (rules.length === 1 ? "" : "s") + " copied to " + done + " client" + (done === 1 ? "" : "s") + ".");
+  render();
+}
+
 /* ---------- the rules screen ---------- */
 function viewRulesPanel(){
   const b = B(), co = CO(b.cid);
@@ -5383,16 +5461,20 @@ function viewRulesPanel(){
       '<td class="n">' + (p.n ? "<b>" + p.n + "</b>" : "0") + '<div class="nr">now showing</div></td>' +
       '<td class="n">' + ((r.stats && r.stats.used) || 0) + ((r.stats && r.stats.over) ? '<div class="nr bad">' + r.stats.over + " changed by hand</div>" : "") + "</td>" +
       '<td style="white-space:nowrap"><button class="btn small" data-redit="' + r.id + '">Change</button> ' +
-        '<button class="linkbtn" data-rtoggle="' + r.id + '">' + (r.off ? "Use" : "Pause") + '</button> <button class="linkbtn" data-rdel="' + r.id + '">Delete</button></td></tr>';
+        '<button class="linkbtn" data-rtoggle="' + r.id + '">' + (r.off ? "Use" : "Pause") + "</button> " +
+        (scope === "client" ? '<button class="linkbtn" data-rcopy="' + r.id + '">Copy to\u2026</button> ' : "") +
+        '<button class="linkbtn" data-rdel="' + r.id + '">Delete</button></td></tr>';
   };
   let h = '<section class="pane"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">Rules</h2>' +
-    '<div><button class="btn small primary" data-act="ruleNew">New rule</button><button class="btn small" data-act="ruleRunNow">Apply to this statement</button></div></div>' +
+    '<div><button class="btn small primary" data-act="ruleNew">New rule</button><button class="btn small" data-act="ruleRunNow">Apply to this statement</button>' +
+    (clientRules().length ? '<button class="btn small" data-act="ruleCopyAll">Copy to other clients</button>' : "") + "</div></div>" +
     '<p class="note" style="margin:6px 0 10px">Rules are read from the top down; the first one that fits wins. Your own choices are never overwritten by a rule.</p>';
   h += '<div class="tblwrap"><table class="data"><thead><tr><th></th><th>Rule</th><th>Does</th><th class="n">Matches</th><th class="n">Used</th><th></th></tr></thead><tbody>' +
     (mine.length ? mine.map((r, i) => line(r, i, "client")).join("") : '<tr><td colspan="6" class="nr">No rules for ' + esc(co.name) + " yet. Make one from any line, or press New rule.</td></tr>") +
     (firm.length ? '<tr><td colspan="6" style="background:var(--paper)"><b>Firm-wide rules</b> \u2014 used for every client, after this client\u2019s own rules</td></tr>' + firm.map((r, i) => line(r, i, "firm")).join("") : "") +
     "</tbody></table></div>";
   if (!firm.length) h += '<p class="note" style="margin-top:8px">Tip: bank charges, interest, salaries and the like are the same for every client. Make those firm-wide once.</p>';
+  h += viewSuggestions();
   return h + "</section>";
 }
 function ruleWhenText(r){
@@ -6624,6 +6706,7 @@ function bankClick(t){
   if (t.dataset.delstmt){ deleteStatement(t.dataset.delstmt); return true; }
   if (t.dataset.gapply){ const inp = document.getElementById(t.dataset.gapply); if (inp) applyGroup(inp.dataset.gkey, inp.value); acClose(); return true; }
   if (t.hasAttribute && (t.hasAttribute("data-bselall") || t.hasAttribute("data-bsel"))) return true;
+  if (t.dataset.rcopy){ const r = clientRules().find(x => x.id === t.dataset.rcopy); if (r) copyRulesTo([r]); return true; }
   if (t.dataset.redit || t.dataset.rtoggle || t.dataset.rdel || t.dataset.rmove){
     const id = t.dataset.redit || t.dataset.rtoggle || t.dataset.rdel || t.dataset.rid;
     const inClient = clientRules().some(x => x.id === id);
@@ -6731,6 +6814,28 @@ function bankClick(t){
       });
       return true;
     }
+    case "ruleFind": {
+      S.ruleSuggest = suggestRules();
+      toast(S.ruleSuggest.length ? S.ruleSuggest.length + " rules can be made from past work." : "Nothing repeated often enough yet.");
+      render(); return true;
+    }
+    case "ruleFindClose": S.ruleSuggest = null; render(); return true;
+    case "ruleMakeSug": {
+      const list = S.ruleSuggest || [];
+      const picked = list.filter((x, i) => { const el = document.querySelector('[data-sug="' + i + '"]'); return el && el.checked; });
+      if (!picked.length){ toast("Tick at least one."); return true; }
+      picked.forEach(sg => {
+        clientRules().unshift(newRule({name: sg.ledger + " \u2013 " + sg.text,
+          when: {text: [{op: "has", v: sg.text}], dir: sg.dir, amtMin: "", amtMax: "", modes: [], acNo: "", account: "any", from: "", to: ""},
+          then: {action: "set", ledger: sg.ledger, kind: "", vtype: "", tdsNature: "", tdsAtPay: false, splits: [], narr: "", ready: true}}));
+      });
+      saveRules("client");
+      S.ruleSuggest = null;
+      const n = runRules(null, {force: false});
+      toast(picked.length + " rules made" + (n ? " \u00b7 " + n + " lines set now" : "") + ".");
+      render(); return true;
+    }
+    case "ruleCopyAll": copyRulesTo(clientRules().filter(r => !r.off)); return true;
     case "ruleRunNow": { const n = runRules(null, {force: true}); toast(n ? n + " lines set by your rules." : "No line matched a rule."); render(); return true; }
     case "bankApplyAll": applyToVisible((B().allLed || "").trim()); return true;
     case "bankClearSearch": { const b2 = B(); b2.q = ""; b2.allLed = ""; render(); return true; }
@@ -6802,6 +6907,8 @@ function bankChange(t){
   return false;
 }
 document.addEventListener("click", ev => {
+  const sa = ev.target.closest && ev.target.closest("[data-sugall]");
+  if (sa){ document.querySelectorAll("[data-sug]").forEach(x => { x.checked = sa.checked; }); return; }
   const rs = ev.target.closest && ev.target.closest("[data-revsel]");
   if (rs){ S.revSel = S.revSel || new Set(); if (rs.checked) S.revSel.add(rs.dataset.revsel); else S.revSel.delete(rs.dataset.revsel); render(); return; }
   const ra = ev.target.closest && ev.target.closest("[data-revall]");
