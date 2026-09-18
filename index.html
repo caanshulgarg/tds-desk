@@ -283,6 +283,8 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .signin-box .f{display:block}
 .signin-box .f span{display:block;font-size:13px;color:var(--muted);margin-bottom:3px}
 .signin-box input{width:100%;height:38px;border:1px solid var(--rule);border-radius:7px;padding:0 10px;font:inherit;background:var(--paper);color:var(--ink)}
+.bigwarn{margin:10px 0;padding:12px 14px;border:2px solid var(--stop);border-radius:10px;background:var(--stop-soft);font-size:14px}
+.bigwarn b{font-size:15px}
 .itembox{margin:10px 0;border:1px solid var(--rule);border-radius:8px;background:var(--sheet);padding:8px 10px}
 .itembox summary{cursor:pointer;font-weight:600;font-size:14px}
 .itembox .data{font-size:13px;margin-top:6px}
@@ -543,7 +545,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 53 (item columns, safer supplier name)";
+const APP_VERSION = "18 Sep 2026 · build 54 (clear warnings: wrong client, proforma, purchase order)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -1311,6 +1313,11 @@ function compute(e, cid){
   if (x.buyerGstin && !gstinValid(x.buyerGstin)) flags.push({lvl:"", t:"The billed-to GSTIN " + x.buyerGstin + " fails its check digit. Compare it with the bill."});
   if (e.status === "draft" && e.gstinNotes) e.gstinNotes.forEach(n => flags.push({lvl:"info", t:n}));
   if (GSTIN_RE.test(g) && PAN_RE.test(pp) && g.slice(2, 12) !== pp) flags.push({lvl:"hi", t:"The PAN on the invoice does not match the PAN inside the GSTIN."});
+  if (e.docKind && !e.docOverride){
+    flags.push({lvl: "hi", t: "This paper is " + (DOC_KIND_TEXT[e.docKind] || "not a tax invoice") + ", not a purchase bill. No purchase should be booked from it. If the supplier later sends the tax invoice, book that one."});
+  }
+  if (x.shipGstin && co.gstin && String(x.shipGstin).toUpperCase() === co.gstin && String(x.buyerGstin || "").toUpperCase() !== co.gstin)
+    flags.push({lvl: "hi", t: "This bill is billed to " + (x.buyerGstin || "another party") + " and only delivered to " + co.name + ". The purchase belongs to the party it is billed to, not to this client."});
   if (x.buyerGstin && co.gstin && String(x.buyerGstin).toUpperCase() !== co.gstin) flags.push({lvl:"hi", t:"The invoice is billed to GSTIN " + x.buyerGstin + ", not " + co.name + " (" + co.gstin + "). Check it belongs to this client."});
   if (num(x.taxable) && num(x.total) && Math.abs(num(x.taxable) + gstTotal - num(x.total)) > 1) flags.push({lvl:"", t:"Taxable value plus GST (" + money(num(x.taxable) + gstTotal) + ") differs from the invoice total (" + money(x.total) + "). The difference goes to round off."});
   if (num(x.cgst) !== num(x.sgst)) flags.push({lvl:"", t:"CGST and SGST are not equal. Check the GST amounts."});
@@ -1373,6 +1380,8 @@ function compute(e, cid){
   const cr = r2(lines.filter(l => l.side === "Cr").reduce((a, l) => a + l.amt, 0));
 
   const missing = [];
+  if (e.docKind && !e.docOverride) missing.push("your confirmation that this really is a purchase bill");
+  if (x.buyerGstin && co.gstin && String(x.buyerGstin).toUpperCase() !== co.gstin && !e.buyerOverride) missing.push("your confirmation that this bill belongs to " + co.name);
   if (!x.vendorName) missing.push("deductee name");
   if (!x.invoiceDate) missing.push("invoice date");
   if (!(base > 0)) missing.push("taxable value");
@@ -1403,13 +1412,15 @@ function buildPrompt(text, fileName, imageCount, kind){
     "File name: " + fileName + "\n\n" +
     "Extract the bill and classify the payment for TDS under India's Income-tax Act, 2025 (section 393). Choose natureId from:\n" + list + "\n\n" +
     "Reply with only one JSON object in this shape:\n" +
-    "{\"items\": [{\"description\": string, \"hsn\": string|null, \"qty\": number|null, \"unit\": string|null, \"rate\": number|null, \"taxable\": number, \"gstRate\": number|null}], \"vendorName\": string, \"vendorGstin\": string|null, \"vendorPan\": string|null, \"buyerName\": string|null, \"buyerGstin\": string|null, \"invoiceNo\": string|null, \"invoiceDate\": \"YYYY-MM-DD\"|null, \"taxableValue\": number|null, \"cgst\": number, \"sgst\": number, \"igst\": number, \"totalAmount\": number|null, \"description\": string, \"natureId\": string, \"natureReason\": string, \"confidence\": number, \"rentMonths\": number|null, \"handwritten\": boolean, \"uncertainFields\": string[], \"legibilityNote\": string}\n" +
+    "{\"docKind\": \"invoice\"|\"proforma\"|\"purchase_order\"|\"quotation\"|\"challan\"|\"receipt\"|\"statement\", \"shipGstin\": string|null, \"items\": [{\"description\": string, \"hsn\": string|null, \"qty\": number|null, \"unit\": string|null, \"rate\": number|null, \"taxable\": number, \"gstRate\": number|null}], \"vendorName\": string, \"vendorGstin\": string|null, \"vendorPan\": string|null, \"buyerName\": string|null, \"buyerGstin\": string|null, \"invoiceNo\": string|null, \"invoiceDate\": \"YYYY-MM-DD\"|null, \"taxableValue\": number|null, \"cgst\": number, \"sgst\": number, \"igst\": number, \"totalAmount\": number|null, \"description\": string, \"natureId\": string, \"natureReason\": string, \"confidence\": number, \"rentMonths\": number|null, \"handwritten\": boolean, \"uncertainFields\": string[], \"legibilityNote\": string}\n" +
     "How to read:\n" +
     "- The vendor issued the bill (name at the top, stamp or signature); the buyer is who it is billed to (\"M/s\", \"To\", \"Bill to\", \"Buyer\").\n" +
     "- Amounts: Indian grouping (1,25,000 = 125000), \"/-\" and \"Rs.\" mark rupees. If the amount is also written in words, use the words to confirm or correct the figure.\n" +
     "- If GST is not charged separately, taxableValue equals the total and all GST heads are 0. If the total is not written, add up the item lines (quantity x rate).\n" +
     "- Dates are day first (12/09/26 = 2026-09-12). A GSTIN has 15 characters; copy it exactly or give null.\n" +
     "- Give vendorPan only if a PAN is written; do not work it out. Use null for anything not on the bill, rather than guessing.\n" +
+    "- docKind: what the paper actually is. A proforma invoice, purchase order, quotation, delivery challan or receipt is NOT a purchase bill.\n" +
+    "- buyerGstin: the GSTIN in the \"Bill to\" block. shipGstin: the GSTIN in the \"Ship to\" or consignee block, when it is different.\n" +
     "- items: one entry for each line on the bill, each with its own GST rate when the bill shows more than one. Leave items empty if the bill has no line detail.\n" +
     "- description: at most 100 characters on what was supplied. natureReason: at most 160 characters. confidence: 0 to 1 for the natureId choice. rentMonths: months billed, only for rent.\n" +
     "- handwritten: true if the key figures are handwritten. uncertainFields: names of fields from the shape above that you could not read with confidence (for example \"totalAmount\", \"invoiceDate\"). legibilityNote: at most 120 characters on what was hard to read, or an empty string.";
@@ -1513,6 +1524,40 @@ function itemsHtml(e, ro){
     '<div class="tblwrap"><table class="data"><thead><tr><th>Description</th><th>HSN/SAC</th><th class="n">Quantity</th><th class="n">Rate</th><th class="n">Value</th><th class="n">GST</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
     (s.rates.length > 1 || s.multi ? '<h4 style="margin:10px 0 4px;font-size:14px">By GST rate</h4><div class="tblwrap"><table class="data"><thead><tr><th>Rate</th><th>HSN/SAC</th><th class="n">Taxable</th><th class="n">GST</th></tr></thead><tbody>' + rateRows + "</tbody></table></div>" : "") +
     "</details>";
+}
+/* ---------- what kind of paper is this, and whose is it? ---------- */
+const DOC_KINDS = [
+  ["proforma", /\b(proforma|performa|pro\s*-?\s*forma)\s*invoice\b|\bproforma\b/i, "a proforma invoice"],
+  ["purchase_order", /\b(purchase\s*order|work\s*order|order\s*confirmation)\b|\bp\.?\s?o\.?\s*(no|number|#)/i, "a purchase order"],
+  ["quotation", /\b(quotation|quote\s*(no|ref)|budgetary\s*offer)\b|\bestimate\s*(no|slip)?\b/i, "a quotation or estimate"],
+  ["challan", /\b(delivery\s*challan|dispatch\s*challan|challan\s*cum)\b/i, "a delivery challan"],
+  ["receipt", /\b(payment\s*receipt|money\s*receipt|advance\s*receipt|receipt\s*voucher)\b/i, "a receipt"],
+  ["statement", /\b(statement\s*of\s*account|ledger\s*statement|outstanding\s*statement)\b/i, "a statement of account"]
+];
+const DOC_KIND_TEXT = {proforma: "a proforma invoice", purchase_order: "a purchase order", quotation: "a quotation or estimate",
+  challan: "a delivery challan", receipt: "a receipt", statement: "a statement of account"};
+// look only at the headings: the word "proforma" inside terms means nothing
+function docKindOf(lines){
+  const head = lines.slice(0, Math.min(lines.length, 25)).join(" \n ");
+  const strongTax = /\b(tax\s*invoice|gst\s*invoice|invoice\s*(no|number|#))\b/i.test(head) && !/\b(proforma|performa|pro\s*-?\s*forma)\b/i.test(head);
+  if (strongTax) return "";
+  for (const [kind, re] of DOC_KINDS) if (re.test(head)) return kind;
+  return "";
+}
+// which GSTIN is the bill made out to, and which is only the delivery address
+function billToShipTo(lines){
+  const out = {bill: "", ship: ""};
+  let mode = "", left = 0;
+  lines.forEach(l => {
+    if (/^\s*(bill\s*to|billed\s*to|buyer|sold\s*to|invoice\s*to)\b/i.test(l)){ mode = "bill"; left = 14; }
+    else if (/^\s*(ship\s*to|shipped\s*to|consignee|deliver(y)?\s*to|place\s*of\s*delivery)\b/i.test(l)){ mode = "ship"; left = 14; }
+    if (!mode || left <= 0) return;
+    const g = (l.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z][Z][0-9A-Z]\b/i) || [])[0];
+    if (g && !out[mode]) out[mode] = g.toUpperCase();
+    left--;
+    if (left <= 0) mode = "";
+  });
+  return out;
 }
 function isPdf(file){ return file.type === "application/pdf" || /\.pdf$/i.test(file.name); }
 function isImage(file){ return /^image\//.test(file.type) || /\.(jpe?g|jpe|jfif|pjpeg|png|webp|gif|hei[cf])$/i.test(file.name); }
@@ -2433,6 +2478,8 @@ function freeParse(text, cid, fileName, opts){
     const rate = gst / taxable * 100;
     if (!FREE_GST_RATES.some(r => Math.abs(rate - r) <= 0.15)) why.push("GST is " + rate.toFixed(2) + "% of the taxable value, not a standard rate");
   }
+  const bs = billToShipTo(lines);
+  if (bs.bill && bs.bill !== (supplier ? supplier.gstin : "")) buyer = {gstin: bs.bill, line: -1};   // the bill-to block decides whose bill it is
   if (supplier && cid && CO(cid) && supplier.gstin === CO(cid).gstin) why.push("this looks like the client's own sales invoice");
   // no GSTIN or PAN printed: a saved deductee of this name supplies the PAN
   if (!supplier && !supplierPan && cid && S.data[cid]){
@@ -2459,6 +2506,8 @@ function freeParse(text, cid, fileName, opts){
     taxableValue: taxable, cgst, sgst, igst, totalAmount: total,
     description: itemText.slice(0, 100),
     items: readItems(lines),
+    docKind: docKindOf(lines),
+    shipGstin: (billToShipTo(lines).ship || null),
     hint: lines.slice(0, 80).join(" ").slice(0, 1500),
     natureId: natureId || (nat ? nat.id : "none"),
     natureReason: natureReason || (nat ? "Free reading: " + nat.how : ""),
@@ -2993,6 +3042,9 @@ function applyExtraction(e, j, cid){
   e.x.cgst = r2(num(j.cgst)); e.x.sgst = r2(num(j.sgst)); e.x.igst = r2(num(j.igst));
   e.x.total = j.totalAmount == null ? "" : r2(num(j.totalAmount));
   e.x.description = s(j.description).slice(0, 140);
+  e.docKind = String(j.docKind || "").toLowerCase().replace(/[^a-z_]/g, "");
+  if (e.docKind === "invoice") e.docKind = "";
+  e.x.shipGstin = String(j.shipGstin || "").toUpperCase().replace(/\s/g, "");
   e.x.items = (j.items || []).map(i => ({
     desc: String(i.desc || i.description || "").slice(0, 80), hsn: String(i.hsn || "").replace(/\D/g, "").slice(0, 8),
     qty: num(i.qty), unit: String(i.unit || "").slice(0, 10), rate: num(i.rate),
@@ -4006,6 +4058,22 @@ function field(label, key, val, o){
   const e = curEntry(), unsure = !o.ro && e && e.uncertain && e.uncertain.indexOf(key) >= 0;
   return '<label class="f' + (o.wide ? " wide" : "") + (unsure ? " unsure" : "") + '"><span>' + label + '</span><input type="' + (o.type || "text") + '" data-x="' + key + '" data-fk="x:' + key + '" value="' + esc(val) + '"' + (o.ro ? " readonly" : "") + (o.type === "number" ? ' step="0.01" inputmode="decimal"' : "") + "></label>";
 }
+function docWarnHtml(e){
+  const co = CO(), x = e.x, out = [];
+  if (e.docKind && !e.docOverride)
+    out.push('<div class="bigwarn"><b>This is ' + esc(DOC_KIND_TEXT[e.docKind] || "not a tax invoice") + ", not a purchase bill.</b>" +
+      "<div>Nothing should be booked from it. Wait for the supplier's tax invoice and book that one instead.</div>" +
+      '<div class="row" style="margin-top:8px"><button class="btn small" data-act="docIsBill">It is a tax invoice \u2014 carry on</button></div></div>');
+  const bill = String(x.buyerGstin || "").toUpperCase(), ship = String(x.shipGstin || "").toUpperCase();
+  if (co.gstin && bill && bill !== co.gstin && !e.buyerOverride){
+    const deliveredHere = ship && ship === co.gstin;
+    out.push('<div class="bigwarn"><b>This bill is not made out to ' + esc(co.name) + ".</b>" +
+      "<div>It is billed to <b>" + esc(bill) + "</b>" + (deliveredHere ? ", and only <b>delivered</b> to this client. The purchase belongs to the party it is billed to." : ", while this client\u2019s GSTIN is " + esc(co.gstin) + ".") +
+      " Check whether it was filed under the wrong client.</div>" +
+      '<div class="row" style="margin-top:8px"><button class="btn small" data-act="buyerOk">It does belong here \u2014 carry on</button></div></div>');
+  }
+  return out.join("");
+}
 function viewDetail(e){
   if (S.reading[e.id]) return '<div class="detail"><section><div class="thinking"><span class="dot"></span>' + esc(S.reading[e.id]) + ": " + esc(e.fileName) + ". " +
     (/careful/i.test(S.reading[e.id]) ? "Handwritten and faint bills can take up to two minutes." : "This usually takes under a minute.") + "</div></section>" +
@@ -4029,6 +4097,7 @@ function viewDetail(e){
       (e.legibility ? " Claude noted: " + esc(e.legibility) : "") + "</p></section>";
   }
   const prev = S.previews[e.id];
+  const docWarn = docWarnHtml(e);
   const readBits = '<div class="row" style="margin-top:8px">' +
     (!ro && S.files[e.id] && S.engine ? '<button class="btn small" data-act="reread">Read again carefully</button>' : "") +
     (e.readMode ? '<span class="note">Read by ' + esc(e.readMode) + "</span>" : "") + "</div>" +
@@ -4036,6 +4105,7 @@ function viewDetail(e){
     (e.readTrace && e.readTrace.length ? '<details class="trace"' + (e.status === "draft" ? " open" : "") + '><summary>How this bill was read</summary><ol>' +
       e.readTrace.map(t => '<li class="' + (t.ok ? "tok" : "tno") + '"><b>' + (t.ok ? "✓ " : "✗ ") + esc(t.step) + "</b>" + (t.note ? ": " + esc(t.note) : "") + "</li>").join("") + "</ol></details>" : "") +
     (e.freeWhy && !ro && !(e.readTrace && e.readTrace.length) ? '<p class="note" style="margin:6px 0 0">Free reading was not enough: ' + esc(e.freeWhy) + ".</p>" : "");
+  h += docWarn;
   h += '<section class="' + (prev ? "withprev" : "") + '">' +
     (prev ? '<details class="prevbox" open><summary>Invoice image</summary><a href="' + prev + '" target="_blank" rel="noopener"><img class="preview" src="' + prev + '" alt="Uploaded invoice"></a></details>' : "") +
     '<div><h3>Invoice details</h3><div class="grid">' +
@@ -4046,7 +4116,7 @@ function viewDetail(e){
     field("SGST", "sgst", x.sgst, {ro, type:"number"}) + field("IGST", "igst", x.igst, {ro, type:"number"}) +
     field("Invoice total", "total", x.total, {ro, type:"number"}) +
     (e.natureId.indexOf("rent") === 0 ? field("Months billed", "rentMonths", x.rentMonths, {ro, type:"number"}) : "") +
-    field("Billed to GSTIN", "buyerGstin", x.buyerGstin, {ro}) +
+    field("Billed to GSTIN", "buyerGstin", x.buyerGstin, {ro}) + (x.shipGstin && x.shipGstin !== x.buyerGstin ? field("Delivered to GSTIN", "shipGstin", x.shipGstin, {ro}) : "") +
     field("What was supplied", "description", x.description, {ro, wide:true}) + "</div>" + itemsHtml(e, ro) + readBits +
     (!prev && e.fileName !== "Manual entry" && !ro && e.readMode ? '<p class="note" style="margin:6px 0 0">The invoice image is shown only in the session it was uploaded.</p>' : "") + "</div></section>";
 
@@ -9778,6 +9848,8 @@ document.addEventListener("click", ev => {
               err => { Cloud.st.busy = ""; Cloud.st.error = err.message; render(); });
       break;
     }
+    case "docIsBill": { const e0 = curEntry(); if (e0){ e0.docOverride = true; Store.saveEntry(S.coId, e0); toast("Taken as a tax invoice."); render(); } break; }
+    case "buyerOk": { const e0 = curEntry(); if (e0){ e0.buyerOverride = true; Store.saveEntry(S.coId, e0); toast("Kept under " + CO().name + "."); render(); } break; }
     case "cloudSync": cloudSync(true); break;
     case "acctRefresh": loadAccount(); break;
     case "adminRefresh": loadAdminOverview(); break;
