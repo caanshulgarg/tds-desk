@@ -266,6 +266,12 @@ html{scroll-padding-bottom:150px}
 .tchip.bad{background:var(--stop-soft);color:var(--stop)}
 .tchip.off{background:var(--rule-soft);color:var(--muted)}
 button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600}
+.signin{min-height:80vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.signin-box{width:min(420px,100%);background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:26px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.signin-box h1{margin:0;font-size:24px}
+.signin-box .f{display:block}
+.signin-box .f span{display:block;font-size:13px;color:var(--muted);margin-bottom:3px}
+.signin-box input{width:100%;height:38px;border:1px solid var(--rule);border-radius:7px;padding:0 10px;font:inherit;background:var(--paper);color:var(--ink)}
 .setupcard{margin-top:14px;padding:12px 14px;border:1px solid var(--rule);border-radius:8px;background:var(--sheet)}
 ol.setup{margin:6px 0 0 18px;padding:0;line-height:1.6}
 ol.setup li{margin:6px 0}
@@ -523,7 +529,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 43 (plans, credit and platform admin)";
+const APP_VERSION = "18 Sep 2026 · build 44 (sign-in required)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3514,6 +3520,13 @@ function render(){
   let pos = null; try { pos = fk && (a.type === "text" || a.type === "search") ? a.selectionStart : null; } catch(e){}
   const typed = fk && a.hasAttribute && a.hasAttribute("data-keeptyped") ? a.value : null;
   renderTop();
+  if (signInNeeded()){
+    app.innerHTML = viewSignIn();
+    if (typeof acAfterRender === "function") acAfterRender();
+    const f0 = document.querySelector('[data-cloud="email"]');
+    if (f0 && !document.activeElement.matches("input")) f0.focus();
+    return;
+  }
   const banner = creditBanner() + (S.storeKind === "db" ? "" :
     '<p class="banner">' + (S.storeKind === "local" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
@@ -3543,7 +3556,7 @@ function renderTop(){
   if (S.view === "company" && CO()){
     const co = CO(), st = co.stats || {};
     bar.innerHTML = '<div class="cochip"><span class="coname">' + esc(co.name) + '</span><span class="note">' + esc(co.gstin || "No GSTIN") + " · FY " + fyOf(null) + "</span></div>" +
-      cloudChip() + bridgeChip(co) +
+      whoChip() + cloudChip() + bridgeChip(co) +
       '<button class="btn small" data-act="switch" title="Change company (F3)">Change company <kbd>F3</kbd></button>' +
       '<button class="btn small" data-act="home" title="All clients (Esc)">All clients</button>' +
       '<button class="btn small" data-act="openSettings">⚙ Settings</button>';
@@ -3551,7 +3564,7 @@ function renderTop(){
     tabs.innerHTML = t.map(([id, label, n]) => '<button role="tab" data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + label + (n ? '<span class="count">' + n + "</span>" : "") + "</button>").join("");
   } else {
     const n = Object.keys(S.inbox).length;
-    bar.innerHTML = cloudChip() + bridgeChip(null) + '<button class="btn small" data-act="switch" title="Select company (F3)">Select company <kbd>F3</kbd></button>' +
+    bar.innerHTML = whoChip() + cloudChip() + bridgeChip(null) + '<button class="btn small" data-act="switch" title="Select company (F3)">Select company <kbd>F3</kbd></button>' +
       '<button class="btn small" data-act="openSettings">⚙ Settings</button>';
     const t = [["clients","Clients", 0], ["inbox","Unsorted uploads", n], ["rules","Settings", 0]];
     tabs.innerHTML = t.map(([id, label, c]) => '<button role="tab" data-htab="' + id + '" aria-selected="' + (S.homeTab === id) + '">' + label + (c ? '<span class="count">' + c + "</span>" : "") + "</button>").join("");
@@ -8221,6 +8234,11 @@ function startCloudSync(){
   cloudTimer = setInterval(() => { if (document.visibilityState === "visible" && Cloud.cfg().auto !== false) cloudSync(false); }, 45000);
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Cloud.on() && Cloud.cfg().auto !== false) cloudSync(false); });
+function whoChip(){
+  if (!Cloud.on()) return "";
+  const a = S.account, who = a && a.me ? (a.me.name || a.me.email) : Cloud.st.email;
+  return '<button class="tchip" data-act="openSettings" title="' + esc(Cloud.st.email) + '">' + esc(who) + (a && a.superadmin ? " \u00b7 administrator" : a && a.me ? " \u00b7 " + esc(a.me.role) : "") + "</button>";
+}
 function cloudChip(){
   if (!Cloud.on()) return "";
   const st = Cloud.st;
@@ -8436,6 +8454,26 @@ function viewSuperadmin(){
         '<td><button class="btn small" data-adminact="saveSecret" data-name="' + k + '">Save</button></td></tr>';
     }).join("") + "</tbody></table></div>";
   return h + "</div>";
+}
+
+/* ---------- nothing is shown until someone signs in ---------- */
+function signInNeeded(){
+  if (window.claude) return false;                 // inside claude.ai, for trying things out
+  if (Cloud.on()) return false;                    // signed in (works offline once signed in)
+  return Cloud.cfg().gate !== false;
+}
+function viewSignIn(){
+  const c = Cloud.cfg(), st = Cloud.st;
+  return '<div class="signin"><div class="signin-box">' +
+    '<h1>TDS Desk</h1>' +
+    '<p class="note">' + esc(S.firm && S.firm.firmName ? S.firm.firmName : "Garg Shekhar & Company") + "</p>" +
+    '<p class="note" style="margin:10px 0 14px">Sign in to see your firm\u2019s work. Nothing is shown before that.</p>' +
+    '<label class="f"><span>Email</span><input type="email" data-cloud="email" data-fk="cloudemail" value="' + esc((S.cloudForm && S.cloudForm.email) || c.email || "") + '" autocomplete="username" autofocus></label>' +
+    '<label class="f" style="margin-top:8px"><span>Password</span><input type="password" data-cloud="password" data-fk="cloudpw" value="' + esc((S.cloudForm && S.cloudForm.password) || "") + '" autocomplete="current-password"></label>' +
+    '<div class="row" style="margin-top:12px"><button class="btn primary" data-act="cloudSignIn"' + (st.busy ? " disabled" : "") + ">" + (st.busy ? "Signing in\u2026" : "Sign in") + "</button></div>" +
+    (st.error ? '<p class="bk-warn" style="margin-top:10px">' + esc(st.error) + "</p>" : "") +
+    '<p class="note" style="margin-top:14px">Forgotten the password? Ask the person who runs your firm\u2019s account to make a new one.</p>' +
+    "</div></div>";
 }
 
 // Always-visible bar at the bottom of the screen for the bill that is open
@@ -8887,7 +8925,7 @@ document.addEventListener("click", ev => {
     case "cloudSignOut": {
       askConfirm({title: "Sign out of the firm account?", ok: "Sign out", body: "This computer keeps its own copy of everything. Changes made after signing out are not shared until you sign in again."}).then(a => {
         if (!a) return;
-        Cloud.signOut(); clearInterval(cloudTimer); toast("Signed out."); render();
+        Cloud.signOut(); clearInterval(cloudTimer); S.account = null; S.adminData = null; toast("Signed out."); render();
       });
       break;
     }
