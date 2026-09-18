@@ -266,6 +266,13 @@ html{scroll-padding-bottom:150px}
 .tchip.bad{background:var(--stop-soft);color:var(--stop)}
 .tchip.off{background:var(--rule-soft);color:var(--muted)}
 button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.tile{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:16px;border:1px solid var(--rule);border-radius:12px;background:var(--sheet);cursor:pointer;font:inherit;color:var(--ink);transition:border-color .12s,box-shadow .12s}
+.tile:hover{border-color:var(--ink-soft);box-shadow:0 1px 4px rgba(0,0,0,.07)}
+.tile .ti{font-size:22px;line-height:1.1;margin-bottom:6px}
+.tile .tt{font-weight:650;font-size:15.5px}
+.tile .tn{color:var(--muted);font-size:13px}
+.tile .ts{margin-top:6px;font-size:12.5px;color:var(--ledger);font-weight:600}
 .signin{min-height:80vh;display:flex;align-items:center;justify-content:center;padding:24px}
 .signin-box{width:min(420px,100%);background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:26px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .signin-box h1{margin:0;font-size:24px}
@@ -529,7 +536,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "18 Sep 2026 · build 45 (sign up and sign in)";
+const APP_VERSION = "18 Sep 2026 · build 46 (settings in tiles)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3274,7 +3281,7 @@ function viewJobs(filterFn){
 }
 function readingCheck(){
   const ocr = {idle:["no","Free OCR: checking…"], available:["ok", S.ocrKind === "built-in" ? "Free OCR: built in" : "Free OCR: available"], loading:["no","Free OCR: loading…"], ready:["ok","Free OCR: working"], unavailable:["bad","Free OCR: blocked here"]}[S.ocrState] || ["no","Free OCR"];
-  const cl = !S.sampleReady ? ["no","Claude: checking…"] : S.engine === "api" ? ["ok","Claude: your API key"] : S.engine === "claude" ? (S.readBlocked || S.samplePerm === "denied" ? ["bad","Claude: access declined"] : ["ok","Claude: available"]) : ["bad","Claude: not set up"];
+  const cl = !S.sampleReady ? ["no","Claude: checking…"] : viaPlatform() ? ["ok","Claude: in your plan"] : S.engine === "api" ? ["ok","Claude: your API key"] : S.engine === "claude" ? (S.readBlocked || S.samplePerm === "denied" ? ["bad","Claude: access declined"] : ["ok","Claude: available"]) : ["bad","Claude: not set up"];
   const pdf = window.pdfjsLib ? ["ok","PDF text: free"] : ["bad","PDF reader missing"];
   const sum = selfTestSummary();
   const selfT = sum.state === "ok" ? ["ok", "Self-test: passed"] : sum.state === "fail" ? ["bad", "Self-test: failed"] : sum.state === "busy" ? ["no", "Self-test: running…"] : null;
@@ -3646,13 +3653,15 @@ function keyBox(opts){
   }
   return h + "</div>";
 }
+function viaPlatform(){ return Cloud.on() && !!S.account && !S.account.superadmin && !apiSettings().key; }
 function viewReading(){
   const cfg = apiSettings(), gcfg = googleSettings(), inClaude = !!window.claude;
   const permText = {granted:"allowed", prompt:"not asked yet", denied:"declined for this page load", unavailable:"not available in this view"}[S.samplePerm] || (S.sample ? "available" : "not available in this view");
   const st = S.readStats, row = (label, state, detail, btn) => '<tr><td><b>' + label + '</b></td><td>' + state + '</td><td class="note">' + detail + "</td><td>" + (btn || "") + "</td></tr>";
   const ocrState = {idle:'<span class="tag no">Checking…</span>', available:'<span class="tag ok">Available</span>', loading:'<span class="tag no">Loading…</span>',
     ready:'<span class="tag ok">Working</span>', unavailable:'<span class="tag bad">Not working</span>'}[S.ocrState] || "";
-  const clState = S.engine ? (S.readBlocked ? '<span class="tag bad">Declined</span>' : '<span class="tag ok">Set up</span>') : '<span class="tag bad">Not set up</span>';
+  const clState = viaPlatform() ? '<span class="tag ok">In your plan</span>'
+    : S.engine ? (S.readBlocked ? '<span class="tag bad">Declined</span>' : '<span class="tag ok">Set up</span>') : '<span class="tag bad">Not set up</span>';
   const banner = (t, busyText) => !t ? "" : '<p class="banner" style="margin:10px 0 0;' + (t.busy ? "" : t.ok ? "border-left-color:var(--ledger);background:var(--ledger-soft)" : "border-left-color:var(--stop);background:var(--stop-soft)") + '">' + (t.busy ? busyText : esc(t.msg)) + "</p>";
 
   // 1. where am I?
@@ -3671,18 +3680,23 @@ function viewReading(){
     row("2. Free: built-in OCR", ocrState,
       S.ocrState === "unavailable" ? esc(ocrProblem()) + "." : S.ocrKind === "built-in" ? "For photos and scans. Built into this app, works offline." : "For photos and scans.",
       '<button class="btn small" data-act="testOcr"' + (S.ocrTest && S.ocrTest.busy ? " disabled" : "") + ">Test</button>") +
-    row("3. Google Cloud Vision OCR", inClaude ? '<span class="tag no">Standalone only</span>' : !hasGoogle() ? '<span class="tag no">No key yet</span>' : (S.googleAuto && !S.googleAuto.ok) || (S.googleLast && !S.googleLast.ok) ? '<span class="tag bad">Not working</span>' : S.googleAuto && S.googleAuto.ok ? '<span class="tag ok">Working</span>' : '<span class="tag ok">Set up</span>',
-      inClaude ? "Blocked inside claude.ai." : hasGoogle() ? "Used when the built-in OCR fails its checks." + (S.googleAuto ? " Daily check: " + (S.googleAuto.ok ? "working." : "FAILED — " + esc(S.googleAuto.msg)) : "") + (S.googleLast && !S.googleLast.ok ? " Last bill: FAILED — " + esc(S.googleLast.msg) : "") : "Stronger on photos and handwriting. Add the key in the box below.",
+    row("3. Google Cloud Vision OCR", inClaude ? '<span class="tag no">Standalone only</span>' : viaPlatform() ? '<span class="tag ok">In your plan</span>' : !hasGoogle() ? '<span class="tag no">No key yet</span>' : (S.googleAuto && !S.googleAuto.ok) || (S.googleLast && !S.googleLast.ok) ? '<span class="tag bad">Not working</span>' : S.googleAuto && S.googleAuto.ok ? '<span class="tag ok">Working</span>' : '<span class="tag ok">Set up</span>',
+      inClaude ? "Blocked inside claude.ai." : viaPlatform() ? "Through your plan: used when the built-in OCR fails its checks; your firm is charged per page."
+      : hasGoogle() ? "Used when the built-in OCR fails its checks." + (S.googleAuto ? " Daily check: " + (S.googleAuto.ok ? "working." : "FAILED — " + esc(S.googleAuto.msg)) : "") + (S.googleLast && !S.googleLast.ok ? " Last bill: FAILED — " + esc(S.googleLast.msg) : "") : "Stronger on photos and handwriting. Add the key in the box below.",
       hasGoogle() ? '<button class="btn small" data-act="testGoogle"' + (S.googleTest && S.googleTest.busy ? " disabled" : "") + ">Test</button>" : "") +
-    row("4. Claude", clState, S.engine === "api" ? "Your Claude API key (" + esc(cfg.model) + ")." : S.engine === "claude" ? "Claude inside claude.ai (access: " + esc(permText) + ")." : "Used only when steps 1–3 fail the checks.",
+    row("4. Claude", clState, viaPlatform() ? "Through your plan: the platform holds the key and your firm is charged for what it uses."
+      : S.engine === "api" ? "Your Claude API key (" + esc(cfg.model) + ")." : S.engine === "claude" ? "Claude inside claude.ai (access: " + esc(permText) + ")." : "Used only when steps 1–3 fail the checks.",
       '<button class="btn small" data-act="testReader"' + (S.engine && !(S.testResult && S.testResult.busy) ? "" : " disabled") + ">Test</button>" +
       (S.samplePerm === "prompt" || S.samplePerm === "denied" ? ' <button class="btn small" data-act="askPerm">Allow</button>' : "")) +
     "</tbody></table></div>" +
     banner(S.ocrTest, "Testing built-in OCR…") + banner(S.googleTest, "Testing Google OCR…") + googleHelpHtml() + banner(S.testResult, "Testing Claude… it may ask for permission first.") +
     '<p style="margin:12px 0 0">Bills read since this page opened: <b>' + st.free + "</b> free · <b>" + (st.google || 0) + "</b> by Google OCR · <b>" + (st.freePlusClaude || 0) + "</b> free figures + Claude for the supplier name · <b>" + st.claudeText + "</b> by Claude (text) · <b>" + st.claudeImages + "</b> by Claude (images).</p></div>";
 
-  // 3. keys
-  h += '<div class="pane" id="keysPane"><h2>Keys</h2><div class="two">' +
+  // 3. keys: only when nobody is signed in to a firm account, or for the administrator
+  const showKeys = !Cloud.on() || (S.account && S.account.superadmin);
+  if (showKeys) h += '<div class="pane" id="keysPane"><h2>Keys</h2>' +
+    (Cloud.on() ? '<p class="note" style="margin:0 0 10px">Keys kept on this computer. Firms do not need any: they use Claude and Google through the platform.</p>' : "") +
+    '<div class="two">' +
     keyBox({title: "Google Cloud Vision OCR key", label: "Google API key", inputId: "gKey", placeholder: "AIza...", value: gcfg.key, saveAct: "saveGoogle", removeAct: "removeGoogle",
       help: "Google Cloud console → create a project → enable billing → enable the Cloud Vision API → APIs & Services → Credentials → Create API key (restrict it to Cloud Vision). 1,000 pages a month free, then about $1.50 per 1,000. Kept only in this browser."}) +
     keyBox({title: "Claude API key", label: "Claude API key", inputId: "apiKey", placeholder: "sk-ant-...", value: cfg.key, saveAct: "saveKey", removeAct: "removeKey",
@@ -3695,14 +3709,38 @@ function viewReading(){
   h += '<div class="pane"><h2>Reading order</h2>' +
     '<label class="chk" style="margin:6px 0 10px"><input type="checkbox" data-act-toggle="askClaudeNew"' + (S.askClaudeNewSupplier ? " checked" : "") + "> <span><b>Ask Claude for a new supplier's name and payment type</b> when free reading got all the figures (a small text-only call). When off, you confirm them yourself; the app remembers them for that supplier's later bills.</span></label>" +
     '<label class="chk" style="margin:6px 0 4px"><input type="checkbox" data-act-toggle="freeFirst"' + (S.freeFirst ? " checked" : "") + "> <span><b>Try free reading first</b> (steps 1–3 above). A result is accepted only when the checks pass: supplier GSTIN check digit, bill number, valid date, taxable value + GST = total, standard GST rate. Otherwise Claude reads the bill.</span></label>" +
-    '<p style="margin:8px 0 0">Now: ' + (S.engine === "api" ? "<b>free steps, then your Claude API key</b>"
+    '<p style="margin:8px 0 0">Now: ' + (viaPlatform() ? "<b>free steps, then Claude through your plan</b>"
+      : S.engine === "api" ? "<b>free steps, then your Claude API key</b>"
       : S.engine === "claude" ? "<b>free steps, then Claude inside claude.ai</b>" + (S.imgMax ? "" : " (text PDFs only)")
       : S.freeFirst ? (hasGoogle() ? "<b>built-in OCR, then Google OCR</b>. No Claude: bills that fail the checks go to Type it in" : "<b>free reading only</b>. Handwritten bills need the Google or Claude key")
       : "<b>nothing: bills cannot be read here</b>") + ".</p></div>";
   return h;
 }
-function viewRules(){
-  let h = viewCloudSettings() + viewAccount() + viewSuperadmin() + viewBridgeSettings() + viewReading() + '<div class="pane"><h2>Firm</h2><div class="grid"><label class="f"><span>Firm name</span><input type="text" data-firm="firmName" value="' + esc(S.firm.firmName) + '"></label></div></div>';
+const SETTING_TILES = [
+  {id: "account",  title: "Firm account",      note: "Who is signed in, people in the firm, sync",       icon: "\u{1F465}"},
+  {id: "plan",     title: "Plan and credit",   note: "What you pay, credit left, usage this month",      icon: "\u{1F4B3}"},
+  {id: "bridge",   title: "Tally Bridge",      note: "Connect to TallyPrime, set it up, check it",       icon: "\u{1F517}"},
+  {id: "reading",  title: "Reading bills",     note: "How bills are read, and a test of each way",       icon: "\u{1F441}"},
+  {id: "rates",    title: "Rates and limits",  note: "TDS rates, limits and the firm's own details",     icon: "\u{1F4D0}"},
+  {id: "platform", title: "Platform",          note: "All firms, credit, plans, prices, keys",           icon: "\u{1F3E2}", superadmin: true}
+];
+function settingsTiles(){
+  const sa = !!(S.account && S.account.superadmin);
+  const a = S.account;
+  const sub = {
+    account: Cloud.on() ? (a && a.me ? esc(a.me.email) + " \u00b7 " + esc(a.me.role) : "signed in") : "not signed in",
+    plan: a && a.firm ? (a.firm.plan ? esc(a.firm.plan.name) : "no plan") + " \u00b7 " + INR.format(num(a.firm.balance)) + " left" : "",
+    bridge: Bridge.on() && Bridge.up() ? (Bridge.st.tallyUp ? "connected to Tally" : "bridge running, Tally not open") : "not connected",
+    reading: S.engine === "api" ? "free steps, then Claude" : hasGoogle() ? "free steps, then Google OCR" : "free reading only",
+    rates: "tax year " + (S.firm && S.firm.fy ? esc(S.firm.fy) : "2026-27"),
+    platform: S.adminData ? (S.adminData.firms || []).length + " firms" : "administrator"
+  };
+  return '<div class="tiles">' + SETTING_TILES.filter(t => !t.superadmin || sa).map(t =>
+    '<button class="tile" data-settab="' + t.id + '"><span class="ti">' + t.icon + '</span><span class="tt">' + esc(t.title) + "</span>" +
+    '<span class="tn">' + esc(t.note) + "</span>" + (sub[t.id] ? '<span class="ts">' + sub[t.id] + "</span>" : "") + "</button>").join("") + "</div>";
+}
+function viewRates(){
+  let h = '<div class="pane"><h2>Firm</h2><div class="grid"><label class="f"><span>Firm name</span><input type="text" data-firm="firmName" value="' + esc(S.firm.firmName) + '"></label></div></div>';
   h += '<div class="pane"><h2>Rates and limits for all clients</h2><p class="note" style="margin:0 0 12px">Set for tax year 2026-27 under section 393 of the Income-tax Act, 2025. Check them against the Act and any Finance Act changes before relying on them. Ledger names are set per client in Company settings.</p>' +
     '<div class="tblwrap"><table class="data"><thead><tr><th>Payment type</th><th>Section</th><th class="n">Rate: Ind/HUF %</th><th class="n">Rate: others %</th><th class="n">Single bill limit</th><th class="n">Limit</th></tr></thead><tbody>' +
     rules().map(r => {
@@ -3714,6 +3752,18 @@ function viewRules(){
     '<div class="row" style="margin-top:12px"><button class="btn small" data-act="resetRules">Restore default rates and limits</button></div>' +
     '<p class="note" style="margin:10px 0 0">Without a PAN the rate is 20%, or 5% for purchase of goods. TDS is worked on the value before GST where GST is shown separately.</p></div>';
   return h;
+}
+function viewRules(){
+  const tab = S.settingsTab;
+  if (!tab) return '<div class="pane" style="background:none;border:0;padding:0"><h2 style="margin:0 0 4px">Settings</h2><p class="note" style="margin:0 0 14px">Choose what you want to change.</p></div>' + settingsTiles();
+  const t = SETTING_TILES.find(x => x.id === tab) || SETTING_TILES[0];
+  const head = '<div class="row" style="margin:0 0 12px;align-items:center"><button class="btn small" data-settab="">\u2190 All settings</button><h2 style="margin:0;font-size:19px">' + t.icon + " " + esc(t.title) + "</h2></div>";
+  if (tab === "account") return head + viewCloudSettings() + (Cloud.on() ? viewAccountPeopleOnly() : "");
+  if (tab === "plan") return head + viewAccount();
+  if (tab === "bridge") return head + viewBridgeSettings();
+  if (tab === "reading") return head + viewReading();
+  if (tab === "platform") return head + viewSuperadmin();
+  return head + viewRates();
 }
 
 /* ---------- Client: invoices ---------- */
@@ -8350,7 +8400,6 @@ function viewAccount(){
     }).join("") + "</tbody></table></div>";
   h += '<div class="row" style="margin-top:10px"><button class="btn small" data-act="acctRefresh">Refresh</button><button class="btn small" data-act="acctHistory">' + (S.walletOpen ? "Hide" : "Show") + " credit history</button></div>";
   if (S.walletOpen) h += walletHtml();
-  h += viewPeople(isOwner || (a.superadmin === true));
   return h + "</div>";
 }
 function walletHtml(){
@@ -8361,6 +8410,11 @@ function walletHtml(){
       "<td>" + esc(w.kind === "credit" ? "Credit added" : w.kind === "fee" ? "Monthly charge" : w.kind === "refund" ? "Refund" : (w.code || "use")) + "</td>" +
       '<td class="n"' + (num(w.amount) < 0 ? "" : ' style="color:var(--ledger)"') + ">" + INR.format(num(w.amount)) + '</td><td class="n">' + INR.format(num(w.balance_after)) + "</td><td>" + esc(w.note || "") + "</td></tr>").join("") +
     "</tbody></table></div>";
+}
+function viewAccountPeopleOnly(){
+  const a = S.account;
+  if (!a) return "";
+  return '<div class="pane">' + viewPeople((a.me || {}).role === "owner" || a.superadmin === true) + "</div>";
 }
 function viewPeople(canManage){
   const a = S.account;
@@ -8734,6 +8788,7 @@ function curEntry(){ return S.view === "company" && S.selected ? D().entries[S.s
 document.addEventListener("click", ev => {
   const t = ev.target.closest("button,[data-select],[data-open],#drop,#dropAuto,#modal,#bankDrop,#salesDrop");
   if (!t) return;
+  if (t.dataset.settab !== undefined){ S.settingsTab = t.dataset.settab || null; render(); window.scrollTo(0, 0); return; }
   if (t.dataset.person){
     const email = t.dataset.email, what = t.dataset.person;
     if (what === "reset") Cloud.fn("admin", {action: "reset_password", email}).then(r => { S.newPerson = {email: r.email, password: r.password}; toast("New password made."); render(); }, e => toast(e.message));
@@ -9006,7 +9061,7 @@ document.addEventListener("click", ev => {
       S.billCheck = null; refreshStats(S.coId); toast(ids.length + " bills are waiting to be posted again."); render(); break;
     }
     case "bridgeDiag": Bridge.diagnose().then(() => Bridge.refresh()).then(() => render()); break;
-    case "openSettings": closeSwitcher(); S.view = "home"; S.homeTab = "rules"; S.arm = null; render(); window.scrollTo(0, 0); break;
+    case "openSettings": S.settingsTab = S.settingsTab || null; closeSwitcher(); S.view = "home"; S.homeTab = "rules"; S.arm = null; render(); window.scrollTo(0, 0); break;
     case "dlStandalone": downloadStandalone(); break;
     case "goReading": closeSwitcher(); S.view = "home"; S.homeTab = "rules"; render(); { const r = document.getElementById("readingPane"); if (r && r.scrollIntoView) r.scrollIntoView(); } break;
     case "testReader": testReader(); break;
