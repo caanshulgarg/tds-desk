@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.7.1'
+$BridgeVersion = '1.7.2'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -651,11 +651,16 @@ function Invoke-Import($payload) {
     $heads = @()
     if ($dates.Count -gt 0) {
       $from = $dates[0]; $to = $dates[$dates.Count - 1]
+      $listSeesOptional = $false
       foreach ($try in @('list', 'daybook')) {
         try {
           $heads = if ($try -eq 'list') { Get-VoucherHeads -Port $port -Company $company -From $from -To $to } else { Get-DayBookHeads -Port $port -Company $company -From $from -To $to }
           if ($null -eq $heads) { $heads = @() }
-          if (@($heads).Count -gt 0) { break }
+          if (@($heads).Count -gt 0) {
+            # the voucher list is only trusted for Optional entries if it actually shows Optional ones
+            if ($try -eq 'list') { foreach ($h in @($heads)) { if ([string]$h.optional -match '^yes$') { $listSeesOptional = $true; break } } }
+            break
+          }
         } catch { $heads = @() }
       }
       Write-Log ("  read-back for the batch: " + @($heads).Count + " vouchers listed for " + $from + " to " + $to)
@@ -666,10 +671,16 @@ function Invoke-Import($payload) {
       $tag = [regex]::Match([string]$r.xmlSent, 'TDSDesk:[A-Za-z0-9._-]+')
       $hit = $null
       if ($tag.Success) { foreach ($h in $heads) { if ([string]$h.narration -like ('*' + $tag.Value + '*')) { $hit = $h; break } } }
-      if (-not $hit -and $r.lastVchId) { foreach ($h in $heads) { if ($h.masterId -eq $r.lastVchId) { $hit = $h; break } } }
+      # Tally's "last voucher id" can point at an older voucher, so it is only trusted when the entry carries no tag of its own
+      elseif ($r.lastVchId) { foreach ($h in $heads) { if ($h.masterId -eq $r.lastVchId) { $hit = $h; break } } }
       if ($hit) {
         $r['verified'] = $true; $r['optional'] = ([string]$hit.optional -match '^yes$'); $r['vchNumber'] = [string]$hit.number; $r['vchType'] = [string]$hit.type
         $r['guid'] = [string]$hit.guid; $r['masterId'] = [string]$hit.masterId; $r['vchDate'] = [string]$hit.date
+      } elseif ([string]$r.xmlSent -match '<ISOPTIONAL>\s*Yes' -and -not $listSeesOptional) {
+        # an Optional entry that this Tally will not show us: we cannot tell, so we say so plainly
+        $r['verified'] = $null
+        $r['verifyNote'] = 'posted as an Optional voucher, which this Tally does not list'
+        $r.message = "Tally created this as an Optional voucher, which does not show in the Day Book and cannot be read back here. Look for it in Display More Reports > Exception Reports > Optional Vouchers before posting it again."
       } elseif (@($heads).Count -gt 0) {
         $r['verified'] = $false
         $r.ok = $false
