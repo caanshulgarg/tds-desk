@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.7.0'
+$BridgeVersion = '1.7.1'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -627,6 +627,8 @@ function Invoke-Import($payload) {
       try {
         $rawReply = Invoke-Tally -TallyPort $port -Xml $env
         $r = Read-ImportResult $rawReply
+        $flat = ($rawReply -replace '\s+', ' ')
+        $r['replySnip'] = $flat.Substring(0, [Math]::Min(300, $flat.Length))
         Write-Log ("    Tally replied: " + (($rawReply -replace '\s+', ' ') -replace '^.*?(<IMPORTRESULT>|<RESPONSE>)', '$1').Substring(0, [Math]::Min(400, (($rawReply -replace '\s+', ' ') -replace '^.*?(<IMPORTRESULT>|<RESPONSE>)', '$1').Length)))
         $r['id'] = $it.id; $r['kind'] = $g.kind; $r['company'] = $company; $r['port'] = $port
         if ($r.ok -and $g.kind -eq 'voucher') {
@@ -671,7 +673,30 @@ function Invoke-Import($payload) {
       } elseif (@($heads).Count -gt 0) {
         $r['verified'] = $false
         $r.ok = $false
-        $r.message = "Tally replied 'created', but the voucher is not in '" + $company + "'. It was not marked as posted. Check the Day Book in Tally before posting it again."
+        # did it land in another company open in this Tally?
+        $elsewhere = ''
+        if ($tag.Success) {
+          try {
+            $sess = @(Get-OpenCompanies | Where-Object { $_.port -eq $port })
+            foreach ($sx in $sess) {
+              foreach ($cx in @($sx.companies)) {
+                $cn = [string]$cx.name
+                if (-not $cn -or $cn -eq $company) { continue }
+                $other = Get-VoucherHeads -Port $port -Company $cn -From $from -To $to
+                foreach ($h in @($other)) { if ([string]$h.narration -like ('*' + $tag.Value + '*')) { $elsewhere = $cn; break } }
+                if ($elsewhere) { break }
+              }
+              if ($elsewhere) { break }
+            }
+          } catch { }
+        }
+        if ($elsewhere) {
+          $r['wrongCompany'] = $elsewhere
+          $r.message = "Tally put this entry into '" + $elsewhere + "', not '" + $company + "'. Delete it from '" + $elsewhere + "' in Tally, close that company (or make '" + $company + "' the active one), then post again."
+          Write-Log ("  WRONG COMPANY: " + $tag.Value + " went into '" + $elsewhere + "' instead of '" + $company + "'")
+        } else {
+          $r.message = "Tally replied 'created', but the entry cannot be found in '" + $company + "' or in any other company open in this Tally. It was not marked as posted. Tally's reply: " + $r.replySnip
+        }
       } else {
         $r['verified'] = $null
         $r['verifyNote'] = 'Tally listed no vouchers for those dates'
