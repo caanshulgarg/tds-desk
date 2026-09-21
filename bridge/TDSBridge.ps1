@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.7.2'
+$BridgeVersion = '1.7.3'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -859,10 +859,16 @@ function Invoke-Client($client) {
         $guid = [string]$bodyObj.guid
         $vtype = [string]$bodyObj.vchType
         $vdate = [string]$bodyObj.vchDate
-        if (-not $guid) { $result = [ordered]@{ ok = $false; error = 'This entry has no Tally identity stored, so it cannot be removed automatically. Delete it in Tally.' } }
+        $vnum = [string]$bodyObj.vchNumber
+        if (-not $guid -and -not ($vnum -and $vdate -and $vtype)) { $result = [ordered]@{ ok = $false; error = 'This entry has no Tally identity stored, so it cannot be removed automatically. Delete it in Tally.' } }
         else {
-          $x = '<VOUCHER REMOTEID="' + (Esc $guid) + '" VCHTYPE="' + (Esc $vtype) + '" ACTION="Delete">' +
-               '<DATE>' + (Esc $vdate) + '</DATE><VOUCHERTYPENAME>' + (Esc $vtype) + '</VOUCHERTYPENAME></VOUCHER>'
+          $x = if ($guid) {
+            '<VOUCHER REMOTEID="' + (Esc $guid) + '" VCHTYPE="' + (Esc $vtype) + '" ACTION="Delete">' +
+            '<DATE>' + (Esc $vdate) + '</DATE><VOUCHERTYPENAME>' + (Esc $vtype) + '</VOUCHERTYPENAME></VOUCHER>'
+          } else {
+            '<VOUCHER DATE="' + (Esc $vdate) + '" TAGNAME="Voucher Number" TAGVALUE="' + (Esc $vnum) + '" VCHTYPE="' + (Esc $vtype) + '" ACTION="Delete">' +
+            '<DATE>' + (Esc $vdate) + '</DATE><VOUCHERTYPENAME>' + (Esc $vtype) + '</VOUCHERTYPENAME><VOUCHERNUMBER>' + (Esc $vnum) + '</VOUCHERNUMBER></VOUCHER>'
+          }
           $env2 = '<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME>' +
                   '<STATICVARIABLES><SVCURRENTCOMPANY>' + (Esc $company) + '</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>' +
                   '<TALLYMESSAGE xmlns:UDF="TallyUDF">' + $x + '</TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
@@ -870,7 +876,7 @@ function Invoke-Client($client) {
             $raw = Invoke-Tally -TallyPort $port -Xml $env2
             $res = Read-ImportResult $raw
             $gone = ($raw -match '<DELETED>\s*1') -or $res.ok
-            Write-Log ("Unpost " + $guid + " from '" + $company + "': " + $(if ($gone) { 'removed' } else { 'FAILED ' + $res.message }))
+            Write-Log ("Unpost " + $(if ($guid) { $guid } else { $vtype + ' ' + $vnum + ' of ' + $vdate }) + " from '" + $company + "': " + $(if ($gone) { 'removed' } else { 'FAILED ' + $res.message }))
             $result = [ordered]@{ ok = [bool]$gone; company = $company; port = $port; message = $res.message }
           } catch { $result = [ordered]@{ ok = $false; error = 'Tally did not answer: ' + $_.Exception.Message } }
         }
