@@ -24,7 +24,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch { }
   break
 }
-$BridgeVersion = '1.7.3'
+$BridgeVersion = '1.8.0'
 
 # ------------------------------------------------------------------ settings
 function New-BridgeKey {
@@ -481,6 +481,28 @@ function Get-Vouchers([string]$Company, [string]$From, [string]$To, [string]$Led
   return [ordered]@{ ok = $true; company = $Company; port = $port; count = $out.Count; vouchers = $out.ToArray() }
 }
 
+# one ledger's vouchers, filtered by Tally itself: far lighter than reading the Day Book
+function Get-LedgerVouchers([string]$Company, [string]$Ledger, [string]$From, [string]$To, [int]$PinPort) {
+  $port = Find-CompanyPort $Company $PinPort
+  $req = '<ENVELOPE><HEADER><TALLYREQUEST>Export Data</TALLYREQUEST></HEADER><BODY><EXPORTDATA><REQUESTDESC><REPORTNAME>Ledger Vouchers</REPORTNAME>' +
+    '<STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>' + (Esc $Company) + '</SVCURRENTCOMPANY>' +
+    '<SVFROMDATE>' + $From + '</SVFROMDATE><SVTODATE>' + $To + '</SVTODATE><LEDGERNAME>' + (Esc $Ledger) + '</LEDGERNAME>' +
+    '</STATICVARIABLES></REQUESTDESC></EXPORTDATA></BODY></ENVELOPE>'
+  $raw = Invoke-Tally -TallyPort $port -Xml $req
+  $doc = Get-XmlDoc $raw
+  $rows = @(); $cur = $null
+  foreach ($n in $doc.SelectNodes('//*')) {
+    switch ($n.Name) {
+      'DSPVCHDATE'       { if ($cur) { $rows += $cur }; $cur = [ordered]@{ date = $n.InnerText.Trim(); other = ''; type = ''; dr = ''; cr = '' } }
+      'DSPVCHLEDACCOUNT' { if ($cur -and -not $cur.other) { $cur.other = $n.InnerText.Trim() } }
+      'DSPVCHTYPE'       { if ($cur) { $cur.type = $n.InnerText.Trim() } }
+      'DSPVCHDRAMT'      { if ($cur) { $cur.dr = $n.InnerText.Trim() } }
+      'DSPVCHCRAMT'      { if ($cur) { $cur.cr = $n.InnerText.Trim() } }
+    }
+  }
+  if ($cur) { $rows += $cur }
+  return [ordered]@{ ok = $true; company = $Company; port = $port; ledger = $Ledger; count = $rows.Count; rows = $rows }
+}
 function Get-VoucherHeads([int]$Port, [string]$Company, [string]$From, [string]$To) {
   $req = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>TDSDeskVchHeads</ID></HEADER>' +
     '<BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>' + (Esc $Company) + '</SVCURRENTCOMPANY>' +
@@ -851,6 +873,7 @@ function Invoke-Client($client) {
       '/diagnose' { $result = Get-Diagnosis }
       '/readtest' { $result = Invoke-ReadTest $qs['company'] ([int]('0' + $qs['port'])) }
       '/ledgers' { $result = Get-Ledgers $qs['company'] ([int]('0' + $qs['port'])) }
+      '/ledgervouchers' { $result = Get-LedgerVouchers $qs['company'] $qs['ledger'] $qs['from'] $qs['to'] ([int]('0' + $qs['port'])) }
       '/vouchers' { $result = Get-Vouchers $qs['company'] $qs['from'] $qs['to'] $qs['ledger'] $qs['types'] ([int]('0' + $qs['port'])) }
       '/unpost' {
         $bodyObj = $body | ConvertFrom-Json
