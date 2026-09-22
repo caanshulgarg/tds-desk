@@ -338,6 +338,23 @@ header.top .toprow{display:block}
   .steps{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 /* ---- professional pass ---- */
+.mainwrap .wrap{box-sizing:border-box;width:100%}
+#app .bk{min-width:0;max-width:100%}
+#app .bk-head{flex-wrap:wrap;gap:12px}
+#app .bk-tablewrap{overflow-x:auto;max-width:100%}
+#app .bk-table select{max-width:168px}
+#app .bk-table td.ac{white-space:nowrap}
+.bk-table tr.needs td{background:#FFF9EC}
+.bk-table tr.open td{background:var(--ledger-soft)}
+.bk-table .pn.linkbtn{font-weight:600;color:var(--ink);text-decoration:none;text-align:left;padding:0}
+.bk-table .pn.linkbtn:hover{color:var(--ledger);text-decoration:underline}
+.led-ok{color:var(--ledger)}.led-bad{color:#8A5A00}
+.drawer-scrim{position:fixed;inset:0;background:rgba(15,20,18,.28);z-index:40}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(980px,74vw);background:var(--paper);z-index:41;overflow:auto;box-shadow:-10px 0 30px rgba(0,0,0,.18);padding:0 18px 110px}
+.drawer-head{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--paper);padding:14px 2px 10px;border-bottom:1px solid var(--rule);margin-bottom:12px}
+.drawer-head b{font-size:16px;margin-right:10px}
+.drawer .detail{margin:0}
+.actionbar{z-index:45}
 .side-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8FA398;padding:14px 12px 4px}
 .side-client{padding:0 0 4px}
 .side-co{display:flex;flex-direction:column;align-items:flex-start;width:100%;padding:9px 12px;border:1px solid #36483F;border-radius:8px;background:#26352E;color:#fff;font:inherit;text-align:left;cursor:pointer}
@@ -675,7 +692,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 74 (modules in the sidebar, a slim status bar, one Upload button)";
+const APP_VERSION = "22 Sep 2026 · build 75 (review as a table; a bill opens in a side panel)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3475,7 +3492,6 @@ function afterBatch(){
   if (!fresh.length) return;
   const first = fresh.map(j => D().entries[j.entryId]).find(e => e && e.status === "draft");
   goStep("review", "bills");
-  if (first){ S.selected = first.id; render(); }
   toast(fresh.length + " bill" + (fresh.length === 1 ? "" : "s") + " read. Review " + (fresh.length === 1 ? "it" : "them") + " below.");
 }
 function pump(){
@@ -4013,7 +4029,7 @@ function render(){
     S.view = "home";
     body = S.homeTab === "today" ? viewToday() : S.homeTab === "inbox" ? viewInboxAll() : S.homeTab === "tally" ? viewTallyHome() : S.homeTab === "rules" ? viewRules() : viewClients();
   }
-  app.innerHTML = selfTestBanner() + banner + body + actionBar();
+  app.innerHTML = selfTestBanner() + banner + body + drawerHtml() + actionBar();
   Object.entries(drafts).forEach(([id, v]) => { const el = document.getElementById(id); if (el && el.hasAttribute("data-draft") && el.value !== v) el.value = v; });
   renderSwitcher();
   if (fk){
@@ -4077,7 +4093,7 @@ function curStep(){
 function goStep(step, type){
   type = type || docType();
   S.step = step === "collect" ? "collect" : null;
-  S.selected = null; S.reviewTable = false;
+  S.selected = null; S.reviewTable = (step === "review" && type === "bills"); S.drawerOpen = false;
   if (step === "post" || step === "done"){
     S.tab = step === "post" ? "export" : "done"; S.postFocus = type;
     if (!S.bank || S.bank.cid !== S.coId) loadBank(S.coId).then(() => render());
@@ -4458,13 +4474,27 @@ function draftRows(){
     return {e, c};
   });
 }
+function drawerEntry(){
+  if (!S.drawerOpen || S.view !== "company" || S.tab !== "invoices" || !S.reviewTable || S.filter !== "draft") return null;
+  const e = S.selected && D().entries[S.selected];
+  if (!e || (e.status !== "draft" && e.status !== "duplicate")){ S.drawerOpen = false; return null; }
+  return e;
+}
+function drawerHtml(){
+  const e = drawerEntry();
+  if (!e) return "";
+  const rows = draftRows(), i = rows.findIndex(r => r.e.id === e.id);
+  return '<div class="drawer-scrim" data-act="drawerClose"></div><aside class="drawer" role="dialog" aria-modal="true" aria-label="Bill">' +
+    '<div class="drawer-head"><div><b>' + esc(e.x.vendorName || e.fileName || "Bill") + '</b><span class="note">' + esc(e.x.invoiceNo || "") + (i >= 0 ? " \u00b7 " + (i + 1) + " of " + rows.length : "") + "</span></div>" +
+    '<button class="btn small" data-act="drawerClose">Close</button></div>' + viewDetail(e) + "</aside>";
+}
 function viewReviewTable(){
   const co = CO(), rows = draftRows();
   const sel = S.revSel = S.revSel || new Set();
   const nSel = rows.filter(r => sel.has(r.e.id)).length;
   let h = '<div class="bk"><div class="bk-head"><div class="bk-id"><h2 class="bk-title">Review ' + rows.length + " uploaded bill" + (rows.length === 1 ? "" : "s") + '</h2><div class="bk-sub">' + esc(co.name) + " \u00b7 tick the ones to book TDS on, then approve together</div></div>" +
     '<dl class="bk-figs"><div><dt>Bills</dt><dd>' + rows.length + '</dd></div><div><dt>Value</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.e.x.total), 0))) + '</dd></div><div><dt>TDS</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.c.tds), 0))) + "</dd></div></dl>" +
-    '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button><button class="btn small" data-act="bankPickBills">Upload more</button></div></div>';
+    '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button></div></div>';
   if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
   h += '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th><th class="dt">Date</th><th>Supplier</th><th>Bill no.</th><th class="n">Value</th><th>Payment type</th><th class="ck">TDS</th><th class="n">TDS</th><th>This year vs limit</th><th class="ac"></th></tr></thead><tbody>';
   h += rows.map(({e, c}) => {
@@ -4474,9 +4504,11 @@ function viewReviewTable(){
       : '<span class="' + (m.used + m.add > m.limit ? "src bad" : "src") + '">' + money0(m.used + m.add) + " of " + money0(m.limit) + (m.used + m.add > m.limit ? " \u00b7 crossed" : " \u00b7 within") + "</span>" +
         '<span class="src muted">' + (t ? "incl. " + money0(t.credited) + " from Tally" : "bills here only") + "</span>";
     const miss = (c.missing || []).length || c.flags.some(f => f.lvl === "hi") || e.confirmType;
-    return '<tr' + (sel.has(e.id) ? ' class="picked"' : "") + '><td class="ck"><input type="checkbox" data-revsel="' + e.id + '"' + (sel.has(e.id) ? " checked" : "") + "></td>" +
+    const led = e.expenseLedger || "", ledOk = led && (!hasLedgerList() || exactLedger(led));
+    return '<tr class="' + (sel.has(e.id) ? "picked " : "") + (miss ? "needs" : "") + (S.drawerOpen && S.selected === e.id ? " open" : "") + '"><td class="ck"><input type="checkbox" data-revsel="' + e.id + '"' + (sel.has(e.id) ? " checked" : "") + "></td>" +
       '<td class="dt">' + (e.x.invoiceDate ? shortDate(e.x.invoiceDate) : "\u2014") + "</td>" +
-      '<td class="pt"><div class="pn">' + esc(e.x.vendorName || e.fileName || "\u2014") + '</div><div class="nr">' + esc(e.x.vendorGstin || e.x.vendorPan || "no GSTIN or PAN") + "</div></td>" +
+      '<td class="pt"><button class="linkbtn pn" data-revopen="' + e.id + '">' + esc(e.x.vendorName || e.fileName || "\u2014") + '</button><div class="nr">' + esc(e.x.vendorGstin || e.x.vendorPan || "no GSTIN or PAN") + "</div>" +
+        '<div class="nr ' + (ledOk ? "led-ok" : "led-bad") + '">' + (led ? "\u2192 " + esc(led) + (ledOk ? " \u2713" : " \u00b7 not in Tally") : "\u2192 no ledger yet") + "</div></td>" +
       "<td>" + esc(e.x.invoiceNo || "\u2014") + '</td><td class="n">' + INR.format(num(e.x.total)) + "</td>" +
       '<td><select data-revnature="' + e.id + '">' + rules().map(r => '<option value="' + r.id + '"' + (r.id === e.natureId ? " selected" : "") + ">" + esc(r.label) + "</option>").join("") + "</select></td>" +
       '<td class="ck"><input type="checkbox" data-revtds="' + e.id + '"' + (c.tdsWould > 0 && !c.skip ? " checked" : "") + (c.rule && c.rule.basis === "never" ? " disabled" : "") + ' title="' + esc(c.skip ? skipText(c.skip) : c.tdsWould > 0 ? "TDS is deducted on this bill" : "Below the limits: tick to deduct anyway") + '"></td>' +
@@ -10293,7 +10325,7 @@ function viewSignIn(){
 
 // Always-visible bar at the bottom of the screen for the bill that is open
 function actionBar(){
-  if (S.view === "company" && S.tab === "invoices" && S.reviewTable && S.filter === "draft") return reviewBar();
+  if (S.view === "company" && S.tab === "invoices" && S.reviewTable && S.filter === "draft" && !drawerEntry()) return reviewBar();
   if (S.view === "company" && S.tab === "bank") return bankBar();
   if (S.view === "company" && S.tab === "sales") return salesBar();
   if (S.view !== "company" || S.tab !== "invoices") return "";
@@ -10621,7 +10653,7 @@ document.addEventListener("click", ev => {
     return;
   }
   if (t.dataset.adminplan){ return; }
-  if (t.dataset.revopen){ S.selected = t.dataset.revopen; S.reviewTable = false; render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.revopen){ S.selected = t.dataset.revopen; S.drawerOpen = true; render(); return; }
   if (t.dataset.revapprove){ const e0 = D().entries[t.dataset.revapprove]; if (e0){ approve(e0); refreshStats(S.coId); toast("Approved."); render(); } return; }
   if (t.hasAttribute && (t.hasAttribute("data-revsel") || t.hasAttribute("data-revall"))) return;
   if (t.dataset.billfixsel){
@@ -10772,6 +10804,7 @@ document.addEventListener("click", ev => {
       break;
     }
     case "dropKeyHide": S.newDropKey = null; render(); break;
+    case "drawerClose": S.drawerOpen = false; render(); break;
     case "setup": S.step = null; S.tab = isSetupTab(S.tab) ? "invoices" : "settings"; render(); break;
     case "toBankReady": S.tab = "bank"; if (S.bank) S.bank.filter = "ready"; render(); break;
     case "toBankDone": S.tab = "bank"; if (S.bank) S.bank.filter = "done"; render(); break;
@@ -11134,6 +11167,10 @@ document.addEventListener("drop", ev => {
   handleFiles(Array.from(ev.dataTransfer.files || []), d.id === "drop" ? "company" : "auto");
 });
 
+// Esc closes an open bill panel first, before any other shortcut sees the key
+document.addEventListener("keydown", ev => {
+  if (ev.key === "Escape" && S.drawerOpen && !document.querySelector("#confirmBox[style*='flex']")){ ev.preventDefault(); ev.stopImmediatePropagation(); S.drawerOpen = false; render(); }
+}, true);
 /* ------------------------------------------------------------------ */
 /* Start                                                               */
 /* ------------------------------------------------------------------ */
