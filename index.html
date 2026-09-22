@@ -346,6 +346,11 @@ header.top .toprow{display:block}
 #app .bk-table td.ac{white-space:nowrap}
 .bk-table tr.needs td{background:#FFF9EC}
 .vnum .note{margin:4px 0 8px}
+.bk-dates{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:8px 0 10px;font-size:13.5px}
+.bk-dates-l{font-weight:600;color:var(--muted)}
+.bk-dates label{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.bk-dates input[type="date"],.bk-dates select{height:32px;border:1px solid var(--rule);border-radius:7px;padding:0 8px;font:inherit;font-size:13.5px;background:var(--sheet);color:var(--ink)}
+.bk-dates-s{color:var(--ink)}
 .revfilter{display:flex;align-items:center;gap:12px;margin:0 0 10px}
 .revfilter input{flex:1;max-width:520px;height:36px;border:1px solid var(--rule);border-radius:8px;padding:0 12px;font:inherit;font-size:14px;background:var(--sheet)}
 .bk-table tr.open td{background:var(--ledger-soft)}
@@ -631,7 +636,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 80 (opens three times lighter: PDF and Excel readers load when needed)";
+const APP_VERSION = "22 Sep 2026 · build 81 (date range on the bank statement)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -6999,11 +7004,14 @@ async function applyToVisible(ledger){
   b.offerRule = {text: b.q.trim(), ledger: exact, n: rows.length, dir: rows.every(r => r.debit) ? "out" : rows.every(r => r.credit) ? "in" : "any"};
   render();
 }
+function inBankRange(r){ const b = B(); return (!b.from || r.date >= b.from) && (!b.to || r.date <= b.to); }
+function bankRangeOn(){ const b = B(); return !!(b && (b.from || b.to)); }
+function bankRangeRows(){ const b = B(); return bankRangeOn() ? b.rows.filter(inBankRange) : b.rows; }
 function bankVisibleRows(){
   const b = B();
   const q = b.q.trim().toLowerCase();
   const states = tabStates(bankTab());
-  return b.rows.filter(r => (!states || states.includes(r.state) || b.sticky.has(r.id)) && (!q || (r.narr + " " + r.ledger + " " + (r.debit || r.credit) + " " + (r.dec.name || "")).toLowerCase().includes(q)));
+  return b.rows.filter(r => inBankRange(r) && (!states || states.includes(r.state) || b.sticky.has(r.id)) && (!q || (r.narr + " " + r.ledger + " " + (r.debit || r.credit) + " " + (r.dec.name || "")).toLowerCase().includes(q)));
 }
 let bankLastClicked = null;
 function bankToggle(cb, shift){
@@ -7259,7 +7267,7 @@ function viewBank(){
   }
   const acc = accountFor(st);
   const accLedger = exactLedger(acc.ledger);
-  const tc = tabCounts(b.rows);
+  const tc = tabCounts(bankRangeRows());
   // header
   h += '<div class="bk-head"><div class="bk-id">' +
     (b.stmts.length > 1 ? '<select class="bk-stmtsel" data-stmtsel aria-label="Statement">' + b.stmts.slice().reverse().map(s => '<option value="' + s.id + '"' + (s.id === b.cur ? " selected" : "") + ">" + esc(stmtLabel(s)) + "</option>").join("") + "</select>"
@@ -7287,6 +7295,15 @@ function viewBank(){
     '<button role="tab" aria-selected="' + (tab === "rules") + '" data-btab="rules">Rules <span class="cnt">' + allRules().length + "</span></button></div>" +
     (tab === "review" ? '<label class="bk-switch"><input type="checkbox" data-bgroup' + (b.grouped ? " checked" : "") + "> Group by party</label>" : "") +
     '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search the description, party or amount" value="' + esc(b.q) + '"></div>';
+  {
+    const st = curStmt(), lo = (st && st.from) || (b.rows[0] || {}).date || "", hi = (st && st.to) || (b.rows[b.rows.length - 1] || {}).date || "";
+    const inR = bankRangeRows(), out = inR.reduce((a, r) => a + num(r.debit), 0), inn = inR.reduce((a, r) => a + num(r.credit), 0);
+    h += '<div class="bk-dates"><span class="bk-dates-l">Dates</span>' +
+      '<label>From <input type="date" data-bfrom value="' + esc(b.from || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '"></label>' +
+      '<label>To <input type="date" data-bto value="' + esc(b.to || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '"></label>' +
+      '<select data-bquick aria-label="Quick date range"><option value="">Quick pick\u2026</option><option value="all">Whole statement</option><option value="month">This month</option><option value="last">Last month</option><option value="quarter">This quarter</option><option value="fy">This financial year</option></select>' +
+      (bankRangeOn() ? '<span class="bk-dates-s"><b>' + inR.length + "</b> of " + b.rows.length + " lines \u00b7 out " + INR.format(r2(out)) + " \u00b7 in " + INR.format(r2(inn)) + '</span><button class="linkbtn" data-act="bankRangeClear">Clear dates</button>' : "") + "</div>";
+  }
   h += dupFindHtml();
   if (b.offerRule){
     const o = b.offerRule;
@@ -7367,7 +7384,7 @@ function bankRowHtml(r, tab){
 // One line per party among the entries to review
 function bankGroups(){
   const b = B(), m = new Map();
-  b.rows.forEach(r => {
+  bankRangeRows().forEach(r => {
     if (!["attention", "suggested"].includes(r.state)) return;
     const k = r.dec.key;
     let g = m.get(k);
@@ -7439,7 +7456,7 @@ function bankSettingsHtml(){
 function bankBar(){
   const b = B();
   if (!b || b.loading || !curStmt()) return "";
-  const tc = tabCounts(b.rows);
+  const tc = tabCounts(bankRangeRows());
   const nsel = b.sel.size;
   let left, right;
   if (nsel){
@@ -7895,7 +7912,13 @@ function bankClick(t){
     case "ruleRunNow": { const n = runRules(null, {force: true}); toast(n ? n + " lines set by your rules." : "No line matched a rule."); render(); return true; }
     case "bankApplyAll": applyToVisible((B().allLed || "").trim()); return true;
     case "bankClearSearch": { const b2 = B(); b2.q = ""; b2.allLed = ""; render(); return true; }
-    case "bankPost": postBankToTally(); return true;
+    case "bankPost": {
+      // with a date range chosen, only the ready lines inside it are posted
+      if (bankRangeOn()){ const ids = B().rows.filter(r => r.state === "ready" && inBankRange(r)).map(r => r.id); if (!ids.length){ toast("No ready lines in this date range."); return true; } postBankToTally(ids); }
+      else postBankToTally();
+      return true;
+    }
+    case "bankRangeClear": { const b = B(); b.from = ""; b.to = ""; b.sel.clear(); render(); return true; }
     case "bankBulkPost": { const ids = b.rows.filter(r => b.sel.has(r.id) && r.state === "ready").map(r => r.id); b.sel.clear(); postBankToTally(ids); return true; }
     case "bankReportOk": b.postReport = null; render(); return true;
     case "dupFind": closeMenus(); findTallyDuplicates(); return true;
@@ -8005,6 +8028,21 @@ document.addEventListener("keydown", ev => {
 function bankInput(t){
   const b = B(); if (!b) return false;
   if (t.hasAttribute("data-bankq")){ b.q = t.value; b.sticky.clear(); later("bq", render, 250); return true; }
+  if (t.hasAttribute("data-bfrom") || t.hasAttribute("data-bto")){
+    if (t.hasAttribute("data-bfrom")) b.from = t.value; else b.to = t.value;
+    if (b.from && b.to && b.from > b.to){ const x = b.from; b.from = b.to; b.to = x; }
+    b.sel.clear(); later("brange", render, 150); return true;
+  }
+  if (t.hasAttribute("data-bquick")){
+    const v = t.value, now = new Date(), iso = d => d.toISOString().slice(0, 10), y = now.getFullYear(), m = now.getMonth();
+    const fyStart = m >= 3 ? y : y - 1;
+    if (v === "all"){ b.from = ""; b.to = ""; }
+    if (v === "month"){ b.from = iso(new Date(Date.UTC(y, m, 1))); b.to = iso(new Date(Date.UTC(y, m + 1, 0))); }
+    if (v === "last"){ b.from = iso(new Date(Date.UTC(y, m - 1, 1))); b.to = iso(new Date(Date.UTC(y, m, 0))); }
+    if (v === "quarter"){ const qm = Math.floor(m / 3) * 3; b.from = iso(new Date(Date.UTC(y, qm, 1))); b.to = iso(new Date(Date.UTC(y, qm + 3, 0))); }   // Apr-Jun, Jul-Sep, Oct-Dec, Jan-Mar
+    if (v === "fy"){ b.from = iso(new Date(Date.UTC(fyStart, 3, 1))); b.to = iso(new Date(Date.UTC(fyStart + 1, 2, 31))); }
+    b.sel.clear(); render(); return true;
+  }
   if (t.hasAttribute("data-allled")){ b.allLed = t.value; return true; }
   return false;
 }
