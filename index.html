@@ -553,7 +553,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 67 (a deleted bill no longer blocks its file)";
+const APP_VERSION = "22 Sep 2026 · build 68 (inbox shows what a file matched, and can read it anyway)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3221,6 +3221,14 @@ function registerHash(cid, h, entryId){
   pruneIndex(co.hashes, 3000);
   Store.saveCompany(co);
 }
+function pruneStaleHashes(cid){
+  const co = CO(cid), d = S.data[cid];
+  if (!co || !co.hashes || !d || !d.loaded) return 0;
+  let n = 0;
+  Object.keys(co.hashes).forEach(h => { const rec = co.hashes[h]; if (rec && rec.e && !d.entries[rec.e]){ delete co.hashes[h]; n++; } });
+  if (n) Store.saveCompany(co);
+  return n;
+}
 function liveHashRec(cid, h){
   const co = CO(cid);
   const rec = h && co && co.hashes && co.hashes[h];
@@ -3330,7 +3338,7 @@ function reserveFile(j){
 }
 async function runJob(j){
   const seen = await reserveFile(j);
-  if (seen){ j.status = "duplicate"; j.msg = seen.msg; j.dupRef = seen; return; }
+  if (seen && !(j.file && j.file.__force)){ j.status = "duplicate"; j.msg = seen.msg; j.dupRef = seen; return; }
   if (!(await charge("bills", 1, j.name, "Bill read"))){ j.status = "failed"; j.msg = "Credit finished. Ask the administrator to add credit."; softRender(); return; }
   j.status = "reading"; j.msg = ""; softRender();
   let r;
@@ -4182,9 +4190,10 @@ async function docqFile(d){
   const blob = await r.blob();
   return new File([blob], d.fileName || "document", {type: d.mimeType || blob.type || "application/octet-stream"});
 }
-function localSet(id, state, msg){ S.docqLocal[id] = {state, msg: msg || ""}; }
+function localSet(id, state, msg, extra){ S.docqLocal[id] = Object.assign({state, msg: msg || ""}, extra || {}); }
 // read waiting files through the normal pipeline: free reading, OCR, checks and the usual charge
-async function readDocq(ids, cid){
+async function readDocq(ids, cid, opts){
+  const force = !!(opts && opts.force);
   const list = ids.map(id => S.docq[id]).filter(d => d && d.status === "waiting" && docqState(d) !== "reading");
   if (!list.length) return;
   const bills = [], banks = [];
@@ -4194,14 +4203,15 @@ async function readDocq(ids, cid){
     const c3 = d.client_id || cid;
     if (c3 && !D(c3).loaded){ try { await Store.loadCompany(c3); } catch (e){} }      // know this client's bills before judging duplicates
     const seen = c3 && d.fileHash && liveHashRec(c3, d.fileHash);
-    if (seen){ await docqSave(d, {status: "ignored", entryId: seen.e || null}).catch(() => {}); continue; }
+    if (seen && !force){ localSet(d.id, "dup", "", {entryId: seen.e, cid: c3}); continue; }
     localSet(d.id, "reading");
     try {
       const f = await docqFile(d);
       const h = await fileHash(f);
       const seen2 = c3 && liveHashRec(c3, h);
-      if (seen2){ localSet(d.id, ""); await docqSave(d, {status: "ignored", entryId: seen2.e || null}).catch(() => {}); continue; }
+      if (seen2 && !force){ localSet(d.id, "dup", "", {entryId: seen2.e, cid: c3}); continue; }
       f.__docq = d.id;
+      if (force) f.__force = true;
       if (d.docKind === "bank") banks.push({d, f}); else bills.push(f);          // docKind is only a hint: the reader decides the rest
     } catch (e){ localSet(d.id, "failed", e.message); }
   }
@@ -4224,12 +4234,11 @@ function docqFinish(j){
   const id = j.file && j.file.__docq;
   const d = id && S.docq[id];
   if (!d) return;
-  if (j.status === "done" || j.status === "partial"){
+  if (j.status === "done" || j.status === "partial" || (j.status === "held" && j.entryId)){      // held: read, and kept for you to confirm as a possible duplicate
     localSet(id, "");
     docqSave(d, {status: "read", entryId: j.entryId || null, client_id: d.client_id || j.cid || ""}).catch(() => {});
   } else if (j.status === "duplicate"){
-    localSet(id, "");
-    docqSave(d, {status: "ignored", entryId: (j.dupRef && (j.dupRef.entryId || j.dupRef.e)) || null}).catch(() => {});
+    localSet(id, "dup", j.msg || "", {entryId: (j.dupRef && (j.dupRef.entryId || j.dupRef.e)) || "", cid: (j.dupRef && j.dupRef.cid) || d.client_id});
   } else localSet(id, "failed", j.msg || "could not be read");        // stays waiting; staff can try again
   softRender();
 }
@@ -4261,10 +4270,14 @@ function docqPanel(cid){
       return "<tr><td><b>" + esc(d.fileName || "document") + "</b>" + (kindTxt[d.docKind] ? ' <span class="tag" title="A guess from the file name">' + kindTxt[d.docKind] + "?</span>" : "") +
         (d.period ? ' <span class="nr">' + esc(d.period) + "</span>" : "") +
         (st === "reading" ? ' <span class="tag">reading\u2026</span>' : "") +
-        (exp ? '<div class="nr">Link expired, refreshing shortly.</div>' : st === "failed" ? '<div class="nr bad">' + esc(loc.msg || "could not be read") + "</div>" : "") + "</td>" +
+        (exp ? '<div class="nr">Link expired, refreshing shortly.</div>' : st === "failed" ? '<div class="nr bad">' + esc(loc.msg || "could not be read") + "</div>" : "") +
+        (st === "dup" ? (() => { const e0 = loc.entryId && S.data[loc.cid] && S.data[loc.cid].entries[loc.entryId];
+          return '<div class="nr bad">Already entered' + (e0 ? ": " + esc(e0.x.vendorName || e0.fileName || "") + (e0.x.invoiceNo ? " bill " + esc(e0.x.invoiceNo) : "") + " (" + esc(statusLabel(e0.status)) + ")" : loc.msg ? ": " + esc(loc.msg) : "") + ".</div>" +
+            '<div style="margin-top:4px">' + (e0 ? '<button class="linkbtn" data-openentry="' + loc.entryId + '" data-openco="' + loc.cid + '">Open that bill</button> \u00b7 ' : "") +
+            '<button class="linkbtn" data-docqforce="' + d.id + '">Read it anyway</button></div>'; })() : "") + "</td>" +
         "<td>" + esc(d.sender || "") + (d.source ? '<div class="nr">' + esc(d.source) + (d.sourceTicketRef ? " \u00b7 #" + esc(d.sourceTicketRef) : "") + "</div>" : "") + "</td>" +
         "<td>" + ago(d.receivedAt || d.createdAt) + "</td>" +
-        '<td style="white-space:nowrap">' + (st === "reading" || exp ? "" : '<button class="btn small" data-docqread="' + d.id + '">' + (st === "failed" ? "Try again" : "Read") + "</button> ") +
+        '<td style="white-space:nowrap">' + (st === "reading" || st === "dup" || exp ? "" : '<button class="btn small" data-docqread="' + d.id + '">' + (st === "failed" ? "Try again" : "Read") + "</button> ") +
         (cid === "" ? '<select data-docqmove="' + d.id + '"><option value="">Assign to\u2026</option>' + sortedCompanies().map(c => '<option value="' + c.id + '">' + esc(c.name) + "</option>").join("") + "</select> " : "") +
         '<button class="linkbtn" data-docqaside="' + d.id + '" title="Covering letter, duplicate or not for entry">Not for entry</button></td></tr>';
     }).join("") + "</tbody></table></div></section>";
@@ -10121,6 +10134,7 @@ async function openCompany(cid){
     catch (e){ S.loadingCo = false; toast("This client could not be opened. Check your connection and try again."); goHome(); return; }
     S.loadingCo = false;
   }
+  pruneStaleHashes(cid);
   refreshStats(cid);
   render(); window.scrollTo(0, 0);
 }
@@ -10145,6 +10159,12 @@ document.addEventListener("click", ev => {
     return;
   }
   if (t.dataset.docqread){ readDocq([t.dataset.docqread], S.view === "company" ? S.coId : ""); return; }
+  if (t.dataset.docqforce){ const id = t.dataset.docqforce; S.docqLocal[id] = {}; readDocq([id], S.view === "company" ? S.coId : "", {force: true}); return; }
+  if (t.dataset.openentry){
+    const e0 = S.data[t.dataset.openco] && S.data[t.dataset.openco].entries[t.dataset.openentry];
+    if (e0){ if (S.coId !== t.dataset.openco) openCompany(t.dataset.openco); S.tab = "invoices"; S.reviewTable = false; S.filter = e0.status; S.selected = e0.id; render(); window.scrollTo(0, 0); }
+    return;
+  }
   if (t.dataset.docqaside){ setAsideDocq(t.dataset.docqaside); return; }
   if (t.dataset.dropoff){
     askConfirm({title: "Switch this key off?", ok: "Switch it off", body: '<p class="note">Anything using this key will no longer be able to send files in.</p>'}).then(a => {
