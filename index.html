@@ -692,7 +692,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 75 (review as a table; a bill opens in a side panel)";
+const APP_VERSION = "22 Sep 2026 · build 76 (one upload takes many PDFs and PDFs with many invoices)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -2919,7 +2919,7 @@ async function extract(file, careful, page, cidHint){
   if (!S.engine && !S.freeFirst) throw {code: S.sampleReady ? "no_engine" : "not_ready"};
   let text = "", canvases = [], kind;
   if (isPdf(file)){
-    const r = await pdfPages(file, page ? [page] : [1, 2, 3]);
+    const r = await pdfPages(file, page ? [].concat(page) : [1, 2, 3]);
     text = r.text; canvases = r.canvases;
     kind = text.replace(/\s/g, "").length >= 80 ? "pdf_text" : "pdf_scan";
     if (kind === "pdf_scan") text = "";
@@ -3458,6 +3458,45 @@ let activeJobs = 0;
 const MAX_PARALLEL = 2;
 let renderQueued = false;
 function softRender(){ if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); }
+// One PDF may hold one invoice over several pages, several invoices, or copies of one invoice.
+// Returns the pages of each invoice, or null when the PDF is a single invoice.
+async function invoiceGroups(file){
+  let pdf; try { pdf = await getPdf(file); } catch (e){ return null; }
+  const n = pdf.numPages;
+  if (n < 2) return null;
+  const pages = [];
+  for (let p = 1; p <= Math.min(n, 200); p++){
+    let t = "";
+    try { t = pageTextLines(await (await pdf.getPage(p)).getTextContent()); } catch (e){}
+    pages.push({p, t, chars: t.replace(/\s/g, "").length});
+  }
+  // a scanned PDF has no text to go by: three or more pages are taken as one bill per page
+  if (pages.filter(x => x.chars >= 80).length < pages.length / 2) return n >= 3 ? pages.map(x => [x.p]) : null;
+  const RE_NO = /(?:invoice|inv|bill|voucher)\s*(?:no|number|#)\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-.]{1,30})/i;
+  const RE_TOTAL = /(grand\s+total|total\s+amount|invoice\s+total|amount\s+chargeable|total\s+invoice\s+value|net\s+amount|(?:^|\n)\s*total\b[^\n]*\d{1,3}(?:,\d{2,3})*(?:\.\d{2})?)/i;
+  const RE_HEAD = /(tax\s+invoice|invoice|bill\s+of\s+supply)/i;
+  const groups = []; let cur = null;
+  for (const pg of pages){
+    const carried = /(c\s*\/\s*[fo]\b|carried\s+(?:forward|over)|continued|contd\.?|to\s+be\s+continued)/i.test(pg.t);
+    const m = pg.t.match(RE_NO), no = m ? normInv(m[1]) : "", hasTotal = RE_TOTAL.test(pg.t) && !carried;   // "Total c/f" does not end an invoice
+    const gst = (pg.t.toUpperCase().match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/) || [""])[0];
+    if (cur && no && no === cur.no){
+      if (cur.hasTotal && hasTotal){ cur.copies++; continue; }        // original, duplicate, triplicate: read once
+      cur.pages.push(pg.p); cur.hasTotal = cur.hasTotal || hasTotal; continue;
+    }
+    if (cur && no && !cur.no && !cur.hasTotal){ cur.no = no; cur.pages.push(pg.p); cur.hasTotal = hasTotal; continue; }
+    const fresh = !cur || (no && no !== cur.no && RE_HEAD.test(pg.t))
+      || (cur.hasTotal && hasTotal)                                   // the last invoice already ended; this page brings its own total
+      || (cur.hasTotal && RE_HEAD.test(pg.t) && (pg.t.match(/\d{1,3}(?:,\d{2,3})+\.\d{2}|\d{3,}\.\d{2}/g) || []).length >= 3)   // after a totalled invoice, a page with a heading and its own amounts
+      || (gst && cur.gst && gst !== cur.gst && RE_HEAD.test(pg.t));   // another supplier
+    if (fresh){ cur = {no, gst, pages: [pg.p], hasTotal, copies: 0}; groups.push(cur); continue; }
+    if (!cur.gst && gst) cur.gst = gst;
+    cur.pages.push(pg.p); cur.hasTotal = cur.hasTotal || hasTotal;   // a page without a new number carries on the same invoice
+  }
+  const copies = groups.reduce((a, g) => a + g.copies, 0);
+  if (groups.length < 2 && !copies) return null;
+  return groups.slice(0, 100).map(g => g.pages);
+}
 async function enqueueFiles(files, target){
   const split = S.splitPdf;
   const add = [];
@@ -3469,6 +3508,13 @@ async function enqueueFiles(files, target){
       const pages = Math.min(n, 100);
       for (let p = 1; p <= pages; p++) add.push({file:f, page:p});
       if (n > 100) toast(f.name + " has " + n + " pages; the first 100 were queued.");
+    } else if (isPdf(f)){
+      const groups = await invoiceGroups(f);
+      if (groups && groups.length > 1){
+        groups.forEach(g => add.push({file: f, page: g.length === 1 ? g[0] : g}));
+        toast(f.name + " holds " + groups.length + " invoices: each is read as its own bill.");
+      } else if (groups && groups.length === 1) add.push({file: f, page: groups[0].length === 1 ? groups[0][0] : groups[0]});
+      else add.push({file: f});
     } else add.push({file:f});
   }
   add.forEach(j => {
@@ -3477,7 +3523,7 @@ async function enqueueFiles(files, target){
     j.donePromise = new Promise(res => { j.markDone = res; });
     if (j.status === "failed") j.markDone();
     j.id = uid("j"); j.target = target; j.status = j.status || "waiting";
-    j.name = j.file.name + (j.page ? " · page " + j.page : "");
+    j.name = j.file.name + (j.page ? (Array.isArray(j.page) ? " · pages " + j.page[0] + "\u2013" + j.page[j.page.length - 1] : " · page " + j.page) : "");
     S.jobs.push(j);
   });
   S.batchSize = add.length;
@@ -3543,7 +3589,7 @@ async function runJob(j){
       e.uncertain = Array.from(new Set((e.uncertain || []).concat(pr.missing)));
       e.readError = "Free reading found part of this bill. Fill in the fields marked in amber (" + err.detail + "), or add a Google OCR or Claude key in Settings.";
       e.fileHash = j.hash;
-      S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = j.page;
+      S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0];
       setPreview(e.id, pr.preview);
       j.method = "free-partial";
       finishNewEntry(e, cid, j);
@@ -3584,7 +3630,7 @@ async function runJob(j){
     if (!route.cid){
       const item = {id:uid("i"), fileName:j.name, createdAt:new Date().toISOString(), j:r.j, note:route.note, hash:j.hash, readMode:readLabel(r), freeWhy:r.freeWhy || "", readNote:r.note || ""};
       S.inbox[item.id] = item; S.files[item.id] = j.file; setPreview(item.id, r.preview);
-      if (j.page) S.filePages[item.id] = j.page;
+      if (j.page) S.filePages[item.id] = [].concat(j.page)[0];
       Store.saveInbox(item);
       j.status = "unsorted"; j.msg = route.note;
       return;
@@ -3602,7 +3648,7 @@ async function runJob(j){
   if (r.note) e.readNote = r.note;
   e.fileHash = j.hash;
   if (how) e.routedBy = how;
-  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = j.page;
+  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0];
   setPreview(e.id, r.preview);
   finishNewEntry(e, cid, j);
 }
@@ -3693,7 +3739,7 @@ function typeItIn(j){
   if (!cid){ toast("Open the client first, then use Type it in."); return; }
   const e = newEntry(j.name);
   e.fileHash = j.hash; e.readError = j.msg;
-  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = j.page;
+  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0];
   if (isImage(j.file)) S.previews[e.id] = URL.createObjectURL(j.file);
   finishNewEntry(e, cid, null);
   j.status = "typed"; j.cid = cid; j.entryId = e.id;
@@ -8894,10 +8940,10 @@ function salesFromClaude(j, co){
     pos: stateCodeFrom(j.placeOfSupply) || stateOfGstin(cust), taxable: num(j.taxableValue), cgst: num(j.cgst), sgst: num(j.sgst), igst: num(j.igst), cess: num(j.cess),
     total: num(j.totalAmount), irn: String(j.irn || ""), dueDays: num(j.dueDays), items};
 }
-async function readSalesFile(file, cid, progress){
+async function readSalesFile(file, cid, progress, pageList){
   const co = CO(cid), trace = [];
   let text = "", canvases = [], kind;
-  if (isPdf(file)){ const r = await pdfPages(file, [1, 2]); text = r.text; canvases = r.canvases; kind = text.replace(/\s/g, "").length >= 80 ? "pdf_text" : "pdf_scan"; }
+  if (isPdf(file)){ const r = await pdfPages(file, pageList || [1, 2]); text = r.text; canvases = r.canvases; kind = text.replace(/\s/g, "").length >= 80 ? "pdf_text" : "pdf_scan"; }
   else if (isImage(file)){ canvases = [await imageToCanvas(file)]; kind = "photo"; }
   else throw {code: "sales_type"};
   let best = null;
@@ -8943,14 +8989,26 @@ async function uploadSales(files){
   const s = SL(); if (!s) return;
   const cid = s.cid;
   let added = 0;
-  for (const file of files){
+  // a PDF holding several sales invoices is read one invoice at a time
+  const items = [];
+  for (const f of files){
+    const g = isPdf(f) ? await invoiceGroups(f) : null;
+    if (g && g.length > 1){ g.forEach(pg => items.push({file: f, pages: pg})); toast(f.name + " holds " + g.length + " invoices: each is read separately."); }
+    else items.push({file: f, pages: g && g.length === 1 ? g[0] : null});
+  }
+  for (const it of items){
+    const file = it.file;
     s.busy = "Reading " + file.name + "\u2026"; render();
     try {
-      const hash = await fileHash(file);
+      const hash = (await fileHash(file)) + (it.pages ? "p" + it.pages.join(",") : "");
       const same = s.list.find(v => v.hash === hash);
       if (same){ toast(file.name + " was already uploaded (invoice " + (same.x.number || "?") + ")."); continue; }
-      const r = await readSalesFile(file, cid, m => { s.busy = file.name + ": " + m + "\u2026"; render(); });
-      const v = newInvoice(r.x, "upload", {hash, fileName: file.name, method: r.method, trace: r.trace});
+      const r = await readSalesFile(file, cid, m => { s.busy = file.name + ": " + m + "\u2026"; render(); }, it.pages);
+      // the same invoice arriving inside another file is not added twice
+      const no = normInv(r.x && r.x.number);
+      const twin = no && s.list.find(v => normInv(v.x.number) === no && (!v.x.date || !r.x.date || v.x.date === r.x.date));
+      if (twin){ toast("Invoice " + r.x.number + " is already in Sales; not added again."); continue; }
+      const v = newInvoice(r.x, "upload", {hash, fileName: file.name + (it.pages ? " \u00b7 page" + (it.pages.length > 1 ? "s " + it.pages[0] + "\u2013" + it.pages[it.pages.length - 1] : " " + it.pages[0]) : ""), method: r.method, trace: r.trace});
       S.files["sv:" + v.id] = file;
       s.list.push(v);
       mapInvoice(v);
@@ -8967,6 +9025,7 @@ async function uploadSales(files){
   if (added && bridgeLive()) salesAutoSync(true);
 }
 // A sales invoice uploaded from the client list or under Invoices is filed in that client's Sales
+function salesTwin(o, x){ const n = normInv(x && x.number); return !!n && normInv(o.x && o.x.number) === n && (!o.x.date || !x.date || o.x.date === x.date); }
 async function salesIngest(cid, file, r, hash){
   if (!(await charge("sales", 1, file && file.name, "Sales invoice read"))) throw {code: "no_credit"};
   const co = CO(cid);
@@ -8976,11 +9035,11 @@ async function salesIngest(cid, file, r, hash){
     : salesFromFree({j: r.j}, co, r.j && r.j.salesText);
   const v = newInvoice(x, "upload", {hash, fileName: file.name, method: r.method || "", needsMap: true, trace: r.trace || []});
   if (S.sales && S.sales.cid === cid){
-    if (S.sales.list.some(o => o.hash === hash)) return false;
+    if (S.sales.list.some(o => o.hash === hash || salesTwin(o, x))) return false;
     S.sales.list.push(v); v.needsMap = false; mapInvoice(v); saveSales(); render();
   } else {
     const list = (await BankDB.get("sales:" + cid)) || [];
-    if (list.some(o => o.hash === hash)) return false;
+    if (list.some(o => o.hash === hash || salesTwin(o, x))) return false;
     list.push(v);
     await BankDB.set("sales:" + cid, list);
   }
