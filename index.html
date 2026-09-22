@@ -345,6 +345,8 @@ header.top .toprow{display:block}
 #app .bk-table select{max-width:168px}
 #app .bk-table td.ac{white-space:nowrap}
 .bk-table tr.needs td{background:#FFF9EC}
+.revfilter{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.revfilter input{flex:1;max-width:520px;height:36px;border:1px solid var(--rule);border-radius:8px;padding:0 12px;font:inherit;font-size:14px;background:var(--sheet)}
 .bk-table tr.open td{background:var(--ledger-soft)}
 .bk-table .pn.linkbtn{font-weight:600;color:var(--ink);text-decoration:none;text-align:left;padding:0}
 .bk-table .pn.linkbtn:hover{color:var(--ledger);text-decoration:underline}
@@ -692,7 +694,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 76 (one upload takes many PDFs and PDFs with many invoices)";
+const APP_VERSION = "22 Sep 2026 · build 77 (voucher numbers, retry, filter, credit and debit notes)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -1352,7 +1354,8 @@ const SKIP_REASONS = {
   ldc: "Lower or nil deduction certificate",
   na: "Not applicable in my judgement",
   notliable: "This client is not required to deduct TDS",
-  other: "Other reason"
+  other: "Other reason",
+  note: "Credit note: it reduces the purchase, so no TDS is deducted on it"
 };
 function tdsSkipOf(e, co, party){
   if (e.tdsForce) return null;
@@ -1700,6 +1703,20 @@ const DOC_KINDS = [
 const DOC_KIND_TEXT = {proforma: "a proforma invoice", purchase_order: "a purchase order", quotation: "a quotation or estimate",
   challan: "a delivery challan", receipt: "a receipt", statement: "a statement of account"};
 // look only at the headings: the word "proforma" inside terms means nothing
+// a credit or debit note, from its heading
+function noteKindOf(lines){
+  const head = [].concat(lines || []).slice(0, 25).join(" \n ");
+  if (/\bcredit\s*note\b/i.test(head)) return "credit";
+  if (/\bdebit\s*note\b/i.test(head)) return "debit";
+  return "";
+}
+// a note's own number, and the invoice it is against
+function noteNoOf(lines){
+  const t = [].concat(lines || []).slice(0, 40).join("\n");
+  const m = t.match(/\b(?:credit|debit)\s*note\s*(?:no|number|#)\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-.]{1,30})/i) || t.match(/\b(?:cn|dn)\s*(?:no|number|#)\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-.]{1,30})/i);
+  const a = t.match(/\b(?:against|original|ref(?:erence)?\.?\s*to)\s*(?:invoice|bill)?\s*(?:no|number|#)?\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-.]{2,30})/i);
+  return {no: m ? m[1].replace(/[.\-]+$/, "") : "", against: a ? a[1].replace(/[.\-]+$/, "") : ""};
+}
 function docKindOf(lines){
   const head = lines.slice(0, Math.min(lines.length, 25)).join(" \n ");
   const strongTax = /\b(tax\s*invoice|gst\s*invoice|invoice\s*(no|number|#))\b/i.test(head) && !/\b(proforma|performa|pro\s*-?\s*forma)\b/i.test(head);
@@ -2691,11 +2708,13 @@ function freeParse(text, cid, fileName, opts){
   const j = {
     vendorName: vendorName || guessedName, vendorGstin: supplier ? supplier.gstin : null, vendorPan: supplierPan || null,
     buyerName: null, buyerGstin: buyer ? buyer.gstin : null,
-    invoiceNo: invoiceNo || null, invoiceDate: invoiceDate || null,
+    invoiceNo: (noteKindOf(lines) && noteNoOf(lines).no) || invoiceNo || null, invoiceDate: invoiceDate || null,
+    againstInvoice: noteKindOf(lines) ? (noteNoOf(lines).against || (noteNoOf(lines).no ? invoiceNo : "") || null) : null,
     taxableValue: taxable, cgst, sgst, igst, totalAmount: total,
     description: itemText.slice(0, 100),
     items: readItems(lines),
     docKind: docKindOf(lines),
+    noteKind: noteKindOf(lines),
     shipGstin: (billToShipTo(lines).ship || null),
     hint: lines.slice(0, 80).join(" ").slice(0, 1500),
     natureId: natureId || (nat ? nat.id : "none"),
@@ -3242,6 +3261,11 @@ function applyExtraction(e, j, cid){
     taxable: r2(num(i.taxable)), gstRate: i.gstRate == null || i.gstRate === "" ? null : num(i.gstRate)
   })).filter(i => i.desc && (i.taxable || i.qty)).slice(0, 40);
   if (j.hint) e.hint = String(j.hint).slice(0, 1500);
+  // a credit note from the supplier reduces the purchase: no TDS on it, and it goes to Tally as a Debit Note
+  e.noteKind = j.noteKind || (/credit/.test(e.docKind || "") ? "credit" : /debit/.test(e.docKind || "") ? "debit" : "") || noteKindOf(String(j.hint || "").split(/\n| {3,}/));
+  if (e.noteKind && /note/.test(e.docKind || "")) e.docKind = "";
+  if (e.noteKind === "credit" && !e.tdsSkip) e.tdsSkip = "note";
+  if (e.noteKind && j.againstInvoice) e.x.againstInvoice = String(j.againstInvoice).slice(0, 40);
   e.x.rentMonths = j.rentMonths == null ? "" : Math.round(num(j.rentMonths));
   const suggested = rules().some(r => r.id === j.natureId) ? j.natureId : "none";
   const fixedV = fixGstin(e.x.vendorGstin);
@@ -3911,6 +3935,18 @@ function approve(e){
   if (next) S.selected = next.id;
   refreshStats(cid); render();
 }
+function unapply(e, cid){
+  const a = e.applied, p = a && D(cid).parties[a.partyId];
+  if (p && p.ytd && p.ytd[a.fy] && p.ytd[a.fy][a.natureId]){
+    const cur = p.ytd[a.fy][a.natureId];
+    cur.credited = r2(Math.max(0, num(cur.credited) - a.credited));
+    cur.tdsBase = r2(Math.max(0, num(cur.tdsBase) - a.tdsBase));
+    Store.saveParty(cid, p);
+  }
+  const k = invKey(e.x), co = CO(cid);
+  if (k && co.keys && co.keys[k]){ delete co.keys[k]; Store.saveCompany(co); }
+  e.status = "draft"; delete e.applied; delete e.snapshot; delete e.approvedAt;
+}
 function undoApproval(e){
   const cid = S.coId;
   if (e.exportedAt){ toast("This entry was already sent to Tally. Delete it in Tally first, then undo here."); return; }
@@ -3956,18 +3992,27 @@ function refreshStats(cid){
 /* ------------------------------------------------------------------ */
 function tallyDate(d){ return String(d || "").replace(/-/g, ""); }
 function amt(n){ return r2(n).toFixed(2); }
+// the voucher number Tally gets: the supplier's bill number, unless the client leaves numbering to Tally
+function vchNoFor(e, co){
+  if (co.vchNumbering === "tally") return "";
+  return String(e.vchNo || e.x.invoiceNo || "").trim().slice(0, 60);
+}
+function initialsOf(name){ return String(name || "").replace(/[^A-Za-z ]/g, " ").split(/\s+/).filter(w => w.length > 2 && !/^(pvt|ltd|private|limited|and|the|co|llp)$/i.test(w)).map(w => w[0].toUpperCase()).join("").slice(0, 4) || "X"; }
 function voucherXml(e, co){
-  const s = e.snapshot, vt = xesc(co.voucherType || "Journal"), d = tallyDate(e.x.invoiceDate);
+  const note = e.noteKind === "credit";                 // a supplier's credit note: a Debit Note in Tally, every line reversed
+  const s = e.snapshot, vt = xesc(note ? (co.debitNoteType || "Debit Note") : (co.voucherType || "Journal")), d = tallyDate(e.x.invoiceDate);
   let x = '<VOUCHER VCHTYPE="' + vt + '" ACTION="Create" OBJVIEW="Accounting Voucher View">\n';
   x += "<DATE>" + d + "</DATE>\n<EFFECTIVEDATE>" + d + "</EFFECTIVEDATE>\n";
   x += "<VOUCHERTYPENAME>" + vt + "</VOUCHERTYPENAME>\n";
+  const vno = vchNoFor(e, co);
+  if (vno) x += "<VOUCHERNUMBER>" + xesc(vno) + "</VOUCHERNUMBER>\n";
   x += "<REFERENCE>" + xesc(e.x.invoiceNo) + "</REFERENCE>\n<REFERENCEDATE>" + d + "</REFERENCEDATE>\n";
   x += "<PARTYLEDGERNAME>" + xesc(tallyLedgerName(e.partyLedger)) + "</PARTYLEDGERNAME>\n";
   x += "<NARRATION>" + xesc((e.narration || narrationFor(e)) + " | TDSDesk:" + e.id) + "</NARRATION>\n";
   x += "<PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>\n<ISINVOICE>No</ISINVOICE>\n";
   x += "<ISOPTIONAL>" + (co.createOptional ? "Yes" : "No") + "</ISOPTIONAL>\n";
   s.lines.forEach(l => {
-    const dr = l.side === "Dr", a = dr ? "-" + amt(l.amt) : amt(l.amt);
+    const dr = note ? l.side !== "Dr" : l.side === "Dr", a = dr ? "-" + amt(l.amt) : amt(l.amt);
     x += "<ALLLEDGERENTRIES.LIST>\n<LEDGERNAME>" + xesc(tallyLedgerName(l.ledger)) + "</LEDGERNAME>\n<ISDEEMEDPOSITIVE>" + (dr ? "Yes" : "No") + "</ISDEEMEDPOSITIVE>\n<AMOUNT>" + a + "</AMOUNT>\n";
     if (l.role === "party" && co.billwise && e.x.invoiceNo){
       x += "<BILLALLOCATIONS.LIST>\n<NAME>" + xesc(e.x.invoiceNo) + "</NAME>\n<BILLTYPE>New Ref</BILLTYPE>\n<AMOUNT>" + a + "</AMOUNT>\n</BILLALLOCATIONS.LIST>\n";
@@ -4121,7 +4166,7 @@ function renderSide(){
     NAV.filter(n => !(inCo && n[0] === "clients")).map(([id, label, icon]) => '<button class="side-link" data-nav="' + id + '"' + (here === id && !inCo ? ' aria-current="page"' : "") + ">" +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' + icon + "</svg>" +
       "<span>" + label + "</span>" + (counts[id] ? '<span class="side-count">' + counts[id] + "</span>" : "") + "</button>").join("") +
-    '<div class="side-grow"></div><div class="side-foot">' + bridgeChip(S.view === "company" ? CO() : null) + cloudChip() +
+    '<div class="side-grow"></div><div class="side-foot"><span id="sideBridge">' + bridgeChip(S.view === "company" ? CO() : null) + "</span>" + cloudChip() +
     (Cloud.on() ? '<div class="side-who">' + whoChipInner() + '</div><button class="side-out" data-act="signOutNow">Sign out</button>' : "") +
     '<div class="side-ver">' + esc(APP_VERSION.split("\u00b7")[1] || APP_VERSION) + "</div></div>";
 }
@@ -4534,14 +4579,22 @@ function drawerHtml(){
     '<div class="drawer-head"><div><b>' + esc(e.x.vendorName || e.fileName || "Bill") + '</b><span class="note">' + esc(e.x.invoiceNo || "") + (i >= 0 ? " \u00b7 " + (i + 1) + " of " + rows.length : "") + "</span></div>" +
     '<button class="btn small" data-act="drawerClose">Close</button></div>' + viewDetail(e) + "</aside>";
 }
+function revFiltered(){
+  const all = draftRows(), q = String(S.revQuery || "").trim().toLowerCase();
+  if (!q) return all;
+  return all.filter(r => [r.e.x.vendorName, r.e.x.invoiceNo, r.e.x.vendorGstin, r.e.x.vendorPan, r.e.expenseLedger, r.e.partyLedger, r.c.rule && r.c.rule.label,
+    String(r.e.x.total), INR.format(num(r.e.x.total)), r.e.noteKind ? r.e.noteKind + " note" : "", r.e.postError || ""].join(" ").toLowerCase().includes(q));
+}
 function viewReviewTable(){
-  const co = CO(), rows = draftRows();
+  const co = CO(), all = draftRows(), rows = revFiltered();
   const sel = S.revSel = S.revSel || new Set();
   const nSel = rows.filter(r => sel.has(r.e.id)).length;
   let h = '<div class="bk"><div class="bk-head"><div class="bk-id"><h2 class="bk-title">Review ' + rows.length + " uploaded bill" + (rows.length === 1 ? "" : "s") + '</h2><div class="bk-sub">' + esc(co.name) + " \u00b7 tick the ones to book TDS on, then approve together</div></div>" +
     '<dl class="bk-figs"><div><dt>Bills</dt><dd>' + rows.length + '</dd></div><div><dt>Value</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.e.x.total), 0))) + '</dd></div><div><dt>TDS</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.c.tds), 0))) + "</dd></div></dl>" +
     '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button></div></div>';
   if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
+  h += '<div class="revfilter"><input type="search" id="revq" data-fk="revq" value="' + esc(S.revQuery || "") + '" placeholder="Filter by supplier, bill no., GSTIN, ledger, payment type or amount" aria-label="Filter the bills">' +
+    (S.revQuery ? '<span class="note">' + rows.length + " of " + all.length + " shown</span>" : "") + "</div>";
   h += '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th><th class="dt">Date</th><th>Supplier</th><th>Bill no.</th><th class="n">Value</th><th>Payment type</th><th class="ck">TDS</th><th class="n">TDS</th><th>This year vs limit</th><th class="ac"></th></tr></thead><tbody>';
   h += rows.map(({e, c}) => {
     const fy = fyOf(e.x.invoiceDate), t = tallyYtdFor(c.party, fy, e);
@@ -4554,7 +4607,9 @@ function viewReviewTable(){
     return '<tr class="' + (sel.has(e.id) ? "picked " : "") + (miss ? "needs" : "") + (S.drawerOpen && S.selected === e.id ? " open" : "") + '"><td class="ck"><input type="checkbox" data-revsel="' + e.id + '"' + (sel.has(e.id) ? " checked" : "") + "></td>" +
       '<td class="dt">' + (e.x.invoiceDate ? shortDate(e.x.invoiceDate) : "\u2014") + "</td>" +
       '<td class="pt"><button class="linkbtn pn" data-revopen="' + e.id + '">' + esc(e.x.vendorName || e.fileName || "\u2014") + '</button><div class="nr">' + esc(e.x.vendorGstin || e.x.vendorPan || "no GSTIN or PAN") + "</div>" +
-        '<div class="nr ' + (ledOk ? "led-ok" : "led-bad") + '">' + (led ? "\u2192 " + esc(led) + (ledOk ? " \u2713" : " \u00b7 not in Tally") : "\u2192 no ledger yet") + "</div></td>" +
+        '<div class="nr ' + (ledOk ? "led-ok" : "led-bad") + '">' + (led ? "\u2192 " + esc(led) + (ledOk ? " \u2713" : " \u00b7 not in Tally") : "\u2192 no ledger yet") + "</div>" +
+        (e.postFailedAt && e.postError ? '<div class="nr bad">Tally refused: ' + esc(e.postError) + "</div>" : "") +
+        (e.noteKind ? '<div class="nr"><span class="tag">' + (e.noteKind === "credit" ? "Credit note \u2192 Debit Note in Tally" : "Debit note") + "</span></div>" : "") + "</td>" +
       "<td>" + esc(e.x.invoiceNo || "\u2014") + '</td><td class="n">' + INR.format(num(e.x.total)) + "</td>" +
       '<td><select data-revnature="' + e.id + '">' + rules().map(r => '<option value="' + r.id + '"' + (r.id === e.natureId ? " selected" : "") + ">" + esc(r.label) + "</option>").join("") + "</select></td>" +
       '<td class="ck"><input type="checkbox" data-revtds="' + e.id + '"' + (c.tdsWould > 0 && !c.skip ? " checked" : "") + (c.rule && c.rule.basis === "never" ? " disabled" : "") + ' title="' + esc(c.skip ? skipText(c.skip) : c.tdsWould > 0 ? "TDS is deducted on this bill" : "Below the limits: tick to deduct anyway") + '"></td>' +
@@ -7965,7 +8020,7 @@ document.addEventListener("click", ev => {
   const rs = ev.target.closest && ev.target.closest("[data-revsel]");
   if (rs){ S.revSel = S.revSel || new Set(); if (rs.checked) S.revSel.add(rs.dataset.revsel); else S.revSel.delete(rs.dataset.revsel); render(); return; }
   const ra = ev.target.closest && ev.target.closest("[data-revall]");
-  if (ra){ S.revSel = new Set(ra.checked ? draftRows().map(r => r.e.id) : []); render(); return; }
+  if (ra){ S.revSel = new Set(ra.checked ? revFiltered().map(r => r.e.id) : []); render(); return; }   // only the rows the filter shows
   const cb = ev.target.closest && ev.target.closest("[data-bsel]");
   if (cb){ bankToggle(cb, ev.shiftKey); return; }
   const all = ev.target.closest && ev.target.closest("[data-bselall]");
@@ -8094,6 +8149,14 @@ function addDays(iso, n){ const d = new Date(iso + "T00:00:00"); d.setDate(d.get
 
 // Poll the bridge; follow the company open in Tally
 let bridgeTimer = null, bridgeBusy = false;
+// only the small Tally chip changes on a routine check; the page is left alone
+let lastBridgeChip = "";
+function refreshBridgeChip(){
+  const el = document.getElementById("sideBridge");
+  if (!el) return;
+  const html = bridgeChip(S.view === "company" ? CO() : null);
+  if (html !== lastBridgeChip){ el.innerHTML = html; lastBridgeChip = html; }
+}
 async function bridgeTick(first){
   Bridge.st.lastAsk = Date.now();
   if (bridgeBusy || !Bridge.on()) return;
@@ -8116,8 +8179,11 @@ async function bridgeTick(first){
     if (before !== Bridge.st.state || changed){
       if (S.view === "company" && S.tab === "bank" && B() && bridgeLive()) bankAutoSync(false);
       if (S.view === "company" && S.tab === "sales" && SL() && !SL().loading && bridgeLive()) salesAutoSync(false);
-      render();
-    } else renderTop();
+      // redraw only when nobody is in the middle of something
+      const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+      const midWork = S.drawerOpen || (S.revSel && S.revSel.size) || (S.view === "company" && S.tab === "bank" && B() && (B().q || (B().sel && B().sel.size))) || (S.billPost && S.billPost.busy);
+      if (typing || midWork) refreshBridgeChip(); else render();
+    } else refreshBridgeChip();
   } finally { bridgeBusy = false; }
 }
 // the inbox is looked at every two minutes while the window is in front: a small database call, nothing asked of Tally
@@ -8128,7 +8194,7 @@ function startBridgePolling(){
   clearInterval(bridgeTimer);
   if (!Bridge.on()) return;
   bridgeTick(true);
-  const every = Math.max(20000, num(Bridge.cfg().pollSec || 60) * 1000);
+  const every = Math.max(60000, num(Bridge.cfg().pollSec || 60) * 1000);   // never more often than once a minute
   const jitter = Math.floor(Math.random() * 8000);
   bridgeTimer = setInterval(() => {
     if (document.visibilityState !== "visible") return;
@@ -8474,7 +8540,7 @@ async function checkBillsInTally(onlyUnconfirmed){
   try {
     const dates = sent.map(e => e.x.invoiceDate).sort();
     const vt = co.voucherType || "Journal";
-    const j = await Bridge.call("/vouchers?company=" + encodeURIComponent(tname) + "&from=" + isoToTally(addDays(dates[0], -5)) + "&to=" + isoToTally(addDays(dates[dates.length - 1], 5)) + "&types=" + encodeURIComponent([vt, "Purchase", "Journal"].join(",")) + Bridge.pinQ(), null, 300000);
+    const j = await Bridge.call("/vouchers?company=" + encodeURIComponent(tname) + "&from=" + isoToTally(addDays(dates[0], -5)) + "&to=" + isoToTally(addDays(dates[dates.length - 1], 5)) + "&types=" + encodeURIComponent([vt, "Purchase", "Journal", co.debitNoteType || "Debit Note"].join(",")) + Bridge.pinQ(), null, 300000);
     const vs = [].concat(j.vouchers || []).filter(v => !/^yes$/i.test(v.cancelled || ""));
     const now = new Date().toISOString();
     const missing = [];
@@ -8505,7 +8571,7 @@ async function postBillsToTally(){
   canonicalizeBills(list);
   const failed = [];
   const blocked = list.filter(e => e.snapshot.lines.some(l => !exactLedger(l.ledger)));
-  blocked.forEach(e => { const l = e.snapshot.lines.find(x => !exactLedger(x.ledger)); e.postError = "Ledger \u201c" + (l.ledger || "(none)") + "\u201d is not in Tally"; Store.saveEntry(co.id, e); failed.push({no: e.x.invoiceNo, party: e.x.vendorName, msg: e.postError}); });
+  blocked.forEach(e => { const l = e.snapshot.lines.find(x => !exactLedger(x.ledger)); e.postError = "Ledger \u201c" + (l.ledger || "(none)") + "\u201d is not in Tally"; unapply(e, co.id); e.postFailedAt = new Date().toISOString(); Store.saveEntry(co.id, e); failed.push({id: e.id, no: e.x.invoiceNo, party: e.x.vendorName, msg: e.postError}); });
   let todo = list.filter(e => !blocked.includes(e));
   S.billPost = {busy: "Checking Tally for bills already booked\u2026"}; render();
   try {
@@ -8531,12 +8597,26 @@ async function postBillsToTally(){
       const byId = new Map([].concat(j.results || []).map(x => [x.id, x]));
       masters.forEach(l => { const x = byId.get("led:" + l.name); if (x && x.ok){ l.sent = true; l.sentAt = now; } });
       saveBank({newLed: true});
+      // a voucher number another supplier already used: try once more with this supplier's initials added
+      const clash = todo.filter(e => { const x = byId.get(e.id); return x && !x.ok && /already\s+exists/i.test(x.message || "") && co.vchNumbering !== "tally"; });
+      if (clash.length){
+        clash.forEach(e => { e.vchNo = (e.x.invoiceNo || "B") + "/" + initialsOf(e.x.vendorName || e.partyLedger); });
+        S.billPost = {busy: "Voucher numbers already used in Tally: trying " + clash.length + " again with the supplier\u2019s initials\u2026"}; render();
+        try {
+          const j2 = await Bridge.call("/import", {company: tname, masters: [], vouchers: clash.map(e => ({id: e.id, xml: voucherXml(e, co)}))}, 120000);
+          [].concat(j2.results || []).forEach(x => byId.set(x.id, x));
+        } catch (err){ /* reported below as refused */ }
+      }
       todo.forEach(e => {
         const x = byId.get(e.id);
         if (x && x.ok && x.verified === true){ ok++; logPosting({what: "bill", id: e.id, action: "posted", co: co.id, ref: e.x.invoiceNo, party: e.x.vendorName, amount: num(e.x.total), tally: {guid: x.guid || "", masterId: x.masterId || "", vchType: x.vchType || "", vchDate: x.vchDate || "", company: x.company || tname}, by: (Cloud.st && Cloud.st.email) || ""}); e.exportedAt = now; e.postError = ""; e.postUnconfirmed = null; e.postedVia = "bridge"; e.postedInto = x.company || tname; e.postedOptional = !!x.optional; e.postVerified = true; e.tallyVchNo = x.vchNumber || "";
           e.tally = {guid: x.guid || "", masterId: x.masterId || "", vchType: x.vchType || "", vchDate: x.vchDate || "", at: now, by: (Cloud.st && Cloud.st.email) || "", company: x.company || tname}; if (x.optional) optionalN++; }
         else if (x && x.ok){ unverified++; e.postUnconfirmed = {at: now, company: x.company || tname, optional: /Optional/.test(x.verifyNote || '')}; e.postError = (/Optional/.test(x.verifyNote || '') && x.message) ? plainMsg(x.message) : "Tally replied 'created', but TDS Desk could not find the entry in Tally afterwards, so it is NOT marked as posted. Look in Tally (Day Book, and Display More Reports \u2192 Exception Reports \u2192 Optional Vouchers). If it is not there, post it again." + (x.verifyNote ? " [" + x.verifyNote + "]" : ""); failed.push({no: e.x.invoiceNo, party: e.x.vendorName, msg: "not confirmed in Tally"}); }
-        else { e.postError = plainMsg(x && x.message) || "Tally did not confirm this entry."; failed.push({no: e.x.invoiceNo, party: e.x.vendorName, msg: e.postError}); }
+        else {
+          e.postError = plainMsg(x && x.message) || "Tally did not confirm this entry.";
+          failed.push({id: e.id, no: e.x.invoiceNo, party: e.x.vendorName, msg: e.postError});
+          unapply(e, co.id); e.postFailedAt = now;                          // back to review, with Tally's reason on it
+        }
         Store.saveEntry(co.id, e);
       });
     }
@@ -8861,8 +8941,8 @@ function learnCustomer(v){
 }
 /* ---------- Tally XML ---------- */
 function salesVoucherXml(v, co){
-  const x = v.x, cfg = SL().cfg;
-  const vt = xesc(cfg.voucherType || "Sales"), d = tallyDate(x.date);
+  const x = v.x, cfg = SL().cfg, cn = x.noteKind === "credit";
+  const vt = xesc(cn ? (cfg.creditNoteType || "Credit Note") : x.noteKind === "debit" ? (cfg.debitNoteType || "Debit Note") : (cfg.voucherType || "Sales")), d = tallyDate(x.date);
   const pos = x.pos || stateOfGstin(x.customerGstin) || stateOfGstin(co.gstin);
   const amt2 = n => r2(n).toFixed(2);
   let s = '<VOUCHER VCHTYPE="' + vt + '" ACTION="Create" OBJVIEW="Accounting Voucher View">\n<DATE>' + d + "</DATE>\n<EFFECTIVEDATE>" + d + "</EFFECTIVEDATE>\n" +
@@ -8873,10 +8953,10 @@ function salesVoucherXml(v, co){
     "<COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>\n" +
     (co.gstin ? "<CMPGSTIN>" + xesc(co.gstin) + "</CMPGSTIN>\n" : "") +
     (x.irn ? "<IRN>" + xesc(x.irn) + "</IRN>\n" : "") +
-    "<NARRATION>" + xesc((v.source === "created" ? "Sales invoice " : "Being sales invoice ") + x.number + " dated " + fmtDate(x.date) + " to " + (x.customerName || v.customerLedger) + " | TDSDesk:" + v.id) + "</NARRATION>\n" +
+    "<NARRATION>" + xesc((x.noteKind === "credit" ? "Being credit note " : x.noteKind === "debit" ? "Being debit note " : v.source === "created" ? "Sales invoice " : "Being sales invoice ") + x.number + " dated " + fmtDate(x.date) + " to " + (x.customerName || v.customerLedger) + " | TDSDesk:" + v.id) + "</NARRATION>\n" +
     "<PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>\n<ISINVOICE>No</ISINVOICE>\n<ISOPTIONAL>" + (co.createOptional ? "Yes" : "No") + "</ISOPTIONAL>\n";
   salesLines(v).forEach(l => {
-    const dr = l.side === "Dr", a = (dr ? "-" : "") + amt2(l.amt);
+    const dr = cn ? l.side !== "Dr" : l.side === "Dr", a = (dr ? "-" : "") + amt2(l.amt);
     s += "<ALLLEDGERENTRIES.LIST>\n<LEDGERNAME>" + xesc(tallyLedgerName(l.ledger)) + "</LEDGERNAME>\n<ISDEEMEDPOSITIVE>" + (dr ? "Yes" : "No") + "</ISDEEMEDPOSITIVE>\n<ISPARTYLEDGER>" + (l.role === "party" ? "Yes" : "No") + "</ISPARTYLEDGER>\n<AMOUNT>" + a + "</AMOUNT>\n";
     if (l.role === "party") s += "<BILLALLOCATIONS.LIST>\n<NAME>" + xesc(x.number) + "</NAME>\n<BILLTYPE>New Ref</BILLTYPE>\n" + (x.dueDays ? "<BILLCREDITPERIOD>" + num(x.dueDays) + " Days</BILLCREDITPERIOD>\n" : "") + "<AMOUNT>" + a + "</AMOUNT>\n</BILLALLOCATIONS.LIST>\n";
     s += "</ALLLEDGERENTRIES.LIST>\n";
@@ -8965,7 +9045,7 @@ async function readSalesFile(file, cid, progress, pageList){
       if (tryText(o.text, "Built-in OCR")) break;
     }
   }
-  if (best && best.ok) return {x: best.x, method: "free", trace};
+  if (best && best.ok){ best.x.noteKind = best.x.noteKind || noteKindOf(String(text || "").split("\n")); return {x: best.x, method: "free", trace}; }
   // Claude reads the rest (items included)
   if (S.engine){
     if (progress) progress("asking Claude");
@@ -9033,6 +9113,7 @@ async function salesIngest(cid, file, r, hash){
     ? {number: r.j.invoiceNo || "", date: r.j.invoiceDate || "", sellerGstin: co.gstin, customerName: r.j.buyerName || "", customerGstin: fixGstin(r.j.buyerGstin).value || "", pos: stateOfGstin(fixGstin(r.j.buyerGstin).value),
        taxable: num(r.j.taxableValue), cgst: num(r.j.cgst), sgst: num(r.j.sgst), igst: num(r.j.igst), cess: 0, total: num(r.j.totalAmount), items: []}
     : salesFromFree({j: r.j}, co, r.j && r.j.salesText);
+  x.noteKind = x.noteKind || (r.j && r.j.noteKind) || noteKindOf(String((r.j && (r.j.salesText || r.j.hint)) || "").split(/\n| {3,}/));
   const v = newInvoice(x, "upload", {hash, fileName: file.name, method: r.method || "", needsMap: true, trace: r.trace || []});
   if (S.sales && S.sales.cid === cid){
     if (S.sales.list.some(o => o.hash === hash || salesTwin(o, x))) return false;
@@ -10525,7 +10606,10 @@ function viewExport(){
   if (bp.done) h += '<div class="bk-alert' + (bp.unverified || (bp.failed && bp.failed.length) ? " bad" : "") + '" style="margin:10px 0 0">' + (bp.ok || 0) + " posted into <b>" + esc(bp.company || "") + "</b> and confirmed there" + (bp.dup ? " \u00b7 " + bp.dup + " already in Tally (not posted again)" : "") + (bp.failed && bp.failed.length - (bp.unverified || 0) > 0 ? " \u00b7 " + (bp.failed.length - (bp.unverified || 0)) + " not posted" : "") +
     (bp.optional ? '<div style="margin-top:4px"><b>' + bp.optional + " went in as Optional vouchers.</b> Tally does not show these in the Day Book. See them in TallyPrime: Display More Reports \u2192 Exception Reports \u2192 Optional Vouchers (or in the Day Book: F12 / Ctrl+B \u2192 show Optional vouchers). Open one and press Ctrl+L to make it a regular entry. To post regular entries directly, untick \u201cCreate entries as Optional vouchers\u201d in Company settings.</div>" : "") +
     (bp.unverified ? '<div style="margin-top:4px"><b>' + bp.unverified + " not confirmed:</b> Tally replied \u2018created\u2019 but the entry could not be found afterwards, so " + (bp.unverified > 1 ? "they stay" : "it stays") + " in the waiting list. Look in Tally; if it is not there, post again. Use <b>Settings \u2192 Tally Bridge \u2192 Test reading entries</b> and send the result if this repeats.</div>" : "") + "</div>";
-  if (bp.done && bp.failed && bp.failed.length) h += '<div class="bk-alert bad" style="margin:10px 0 0"><b>' + bp.failed.length + " not posted:</b><ul>" + bp.failed.map(f => "<li>" + esc(f.no) + " \u00b7 " + esc(f.party) + ": " + esc(f.msg) + "</li>").join("") + "</ul></div>";
+  if (bp.done && bp.failed && bp.failed.length) h += '<div class="bk-alert bad" style="margin:10px 0 0"><b>' + bp.failed.length + " not posted.</b> They are back in <b>To review</b> with Tally\u2019s reason on each.<ul>" +
+    bp.failed.map(f => "<li>" + esc(f.no) + " \u00b7 " + esc(f.party) + ": " + esc(f.msg) + "</li>").join("") + "</ul>" +
+    '<div class="row" style="gap:8px;margin-top:6px"><button class="btn small primary" data-act="billRetry">Retry these ' + bp.failed.length + '</button><button class="btn small" data-step="review">Open them in To review</button>' +
+    (/already\s+exists/i.test(bp.failed.map(f => f.msg).join(" ")) ? '<span class="note">Tally already has these voucher numbers. In Tally, set the Purchase voucher type\u2019s numbering to Automatic, or retry: numbers get the supplier\u2019s initials.</span>' : "") + "</div></div>";
   const canPost = Bridge.on() && Bridge.up();
   const bc = S.billCheck || {};
   const undoable = v.filter(e => e.exportedAt && e.tally && e.tally.guid);
@@ -10958,6 +11042,15 @@ document.addEventListener("click", ev => {
     }
     case "bridgeOff": Bridge.setCfg({key: ""}); clearInterval(bridgeTimer); Bridge.st = {state: "off", sessions: [], open: [], at: Date.now(), error: ""}; render(); break;
     case "billPost": postBillsToTally(); break;
+    case "billRetry": {
+      const ids = ((S.billPost && S.billPost.failed) || []).map(f => f.id).filter(Boolean);
+      let again = 0, stuck = [];
+      ids.forEach(id => { const e = D().entries[id]; if (!e || e.status !== "draft") return; const c = compute(e); if (c.missing.length){ stuck.push(e.x.invoiceNo || e.x.vendorName); return; }
+        e.vchNo = e.vchNo || ""; const keepSel = S.selected; approve(e); S.selected = keepSel; again++; });
+      if (stuck.length) toast(stuck.length + " still need something filled in: open them in To review.");
+      if (again) postBillsToTally();
+      break;
+    }
     case "billUnpost": {
       const list = Object.values(D().entries).filter(e => e.exportedAt && e.tally && e.tally.guid).sort(byDate);
       if (!list.length){ toast("Nothing here can be taken back automatically."); break; }
@@ -11095,6 +11188,7 @@ document.addEventListener("keydown", ev => {
 
 document.addEventListener("input", ev => {
   const t = ev.target;
+  if (t && t.id === "revq"){ S.revQuery = t.value; softRender(); return; }
   if (t && t.dataset && ["email", "password", "firm", "name"].includes(t.dataset.cloud)){ S.cloudForm = Object.assign({}, S.cloudForm, {[t.dataset.cloud]: t.value}); }
   if (S.view === "company" && S.tab === "bank" && bankInput(t)) return;
   if (S.view === "company" && S.tab === "sales" && salesInput(t)) return;
