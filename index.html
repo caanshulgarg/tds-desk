@@ -283,6 +283,60 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .signin-box .f{display:block}
 .signin-box .f span{display:block;font-size:13px;color:var(--muted);margin-bottom:3px}
 .signin-box input{width:100%;height:38px;border:1px solid var(--rule);border-radius:7px;padding:0 10px;font:inherit;background:var(--paper);color:var(--ink)}
+.shell{display:flex;min-height:100vh;align-items:stretch}
+.side{width:216px;flex-shrink:0;background:#1E2A25;color:#E7ECE8;display:flex;flex-direction:column;gap:2px;padding:18px 12px;box-sizing:border-box;position:sticky;top:0;height:100vh;overflow:auto;z-index:5}
+.side.hidden{display:none}
+.side-brand{font-family:Georgia,"Source Serif 4",serif;font-size:21px;font-weight:600;padding:2px 10px 16px;display:flex;flex-direction:column}
+.side-brand span{font-family:inherit;font-size:12px;font-weight:400;color:#B9C6BF;margin-top:2px}
+.side-link{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:#E7ECE8;font:inherit;font-size:14px;text-align:left;cursor:pointer}
+.side-link:hover{background:#2A3A33}
+.side-link[aria-current="page"]{background:#2F4239;color:#fff;font-weight:600}
+.side-link span:nth-of-type(1){flex-grow:1}
+.side-count{background:#C8E3D5;color:#16392B;font-size:12px;font-weight:600;padding:1px 8px;border-radius:10px}
+.side-grow{flex-grow:1}
+.side-foot{border-top:1px solid #36483F;padding:12px 6px 2px;display:flex;flex-direction:column;gap:8px;font-size:13px}
+.side-foot .tchip{align-self:flex-start;max-width:100%;white-space:normal;text-align:left}
+.side-who .tchip{background:transparent;color:#B9C6BF;border:0;padding:0;font-size:13px}
+.side-out{align-self:flex-start;background:transparent;color:#E7ECE8;border:1px solid #4C6056;border-radius:8px;padding:7px 12px;font:inherit;font-size:13px;cursor:pointer}
+.side-out:hover{border-color:#E7ECE8}
+.side-ver{color:#8FA398;font-size:11px}
+.mainwrap{flex-grow:1;min-width:0;display:flex;flex-direction:column}
+header.top .brand{display:none}
+header.top .toprow{display:block}
+.chead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.chead-name{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.chead-name h2{margin:0;font-size:24px}
+.crumb{font-size:13px}.crumb-sep{color:var(--muted)}
+.chead-actions{display:flex;align-items:center;gap:12px}
+.steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0 4px}
+.step{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.step:hover{border-color:var(--ink-soft)}
+.step[aria-current="step"]{border:2px solid var(--ledger);background:var(--sheet);padding:10px 13px}
+.step-n{width:28px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;background:#DDE3DF;color:#2D3A34;flex-shrink:0}
+.step[aria-current="step"] .step-n{background:var(--ledger);color:#fff}
+.step-t{display:flex;flex-direction:column}.step-t small{color:var(--muted);font-size:12px}
+.dtabs{display:flex;gap:4px;margin-top:6px}
+.dtabs button{border:0;border-bottom:2px solid transparent;background:transparent;padding:9px 14px;font:inherit;font-size:14px;color:var(--muted);cursor:pointer}
+.dtabs button[aria-selected="true"]{border-bottom-color:var(--ledger);color:var(--ink);font-weight:600}
+.today h2{margin:0 0 12px;font-size:22px}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 16px}
+.metric{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border:1px solid var(--rule);border-radius:10px;background:var(--sheet);font:inherit;text-align:left;color:var(--ink);cursor:default}
+.metric[data-nav]{cursor:pointer}
+.metric span{font-size:13px;color:var(--muted)}.metric b{font-size:26px;font-weight:600}
+.metric.warn{background:#FBF1DC;border-color:#E8C27A}.metric.warn span,.metric.warn b{color:#6A4400}
+.tcell{font-weight:600;font-variant-numeric:tabular-nums}
+.collect-card{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:16px 18px;margin:0 0 12px}
+.collect-card h3{margin:0 0 4px;font-size:16px}
+.recent{margin:8px 0;padding-left:18px;font-size:13.5px}
+.inbox-client{margin:0 0 14px}
+@media (max-width: 900px){
+  .shell{flex-direction:column}
+  .side{width:100%;height:auto;position:static;flex-direction:row;flex-wrap:wrap;align-items:center;padding:8px}
+  .side-brand{padding:0 8px;font-size:17px}.side-brand span{display:none}
+  .side-link{width:auto;padding:8px 10px}
+  .side-grow{display:none}.side-foot{border:0;flex-direction:row;flex-wrap:wrap;padding:0}
+  .steps{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 .tchip.signout{background:var(--sheet);border:1px solid var(--rule);color:var(--ink);cursor:pointer}
 .tchip.signout:hover{border-color:var(--stop);color:var(--stop)}
 .bigwarn{margin:10px 0;padding:12px 14px;border:2px solid var(--stop);border-radius:10px;background:var(--stop-soft);font-size:14px}
@@ -431,6 +485,9 @@ img.preview{display:block;max-width:100%;max-height:70vh;margin:0 auto;border:1p
 </style>
 </head>
 <body>
+<div class="shell">
+<nav class="side" id="side" aria-label="Main"></nav>
+<div class="mainwrap">
 <header class="top">
   <div class="wrap">
     <div class="toprow">
@@ -444,6 +501,8 @@ img.preview{display:block;max-width:100%;max-height:70vh;margin:0 auto;border:1p
   </div>
 </header>
 <main class="wrap" id="app"><p class="note">Loading…</p></main>
+</div>
+</div>
 <div id="modal" class="hidden"></div>
 <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept="application/pdf,image/*,.jpg,.jpeg,.jfif,.png,.webp,.heic" multiple class="hidden">
@@ -553,7 +612,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 69 (GSTINs read from rougher OCR text)";
+const APP_VERSION = "22 Sep 2026 · build 70 (new layout: sidebar, Today, and each client as Collect, Review, Post, Done)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -598,7 +657,7 @@ function fixGstin(raw){
 /* ------------------------------------------------------------------ */
 const S = {
   firm:null, companies:{}, inbox:{}, data:{},          // data[cid] = {parties, entries, loaded}
-  coId:null, view:"home", homeTab:"clients", tab:"invoices", filter:"draft", selected:null,
+  coId:null, view:"home", homeTab:"today", tab:"invoices", filter:"draft", step:null, selected:null,
   reading:{}, sample:null, sampleReady:false, imgMax:0, storeKind:"memory",
   partySel:null, partyFy:null, arm:null, homeQuery:"", addingCo:false, switcher:null, loadingCo:false,
   files:{}, previews:{}, filePages:{}, jobs:[], pendingHashes:{}, batchSize:0, readBlocked:null,
@@ -3851,13 +3910,15 @@ function render(){
   const banner = creditBanner() + (S.storeKind === "db" || (Cloud.on() && Cloud.st && !Cloud.st.error) ? "" :
     '<p class="banner">' + (S.storeKind === "local" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
-  if (S.view === "company" && CO()){
+  if (S.view === "company" && CO() && S.step === "collect" && !["settings", "deductees"].includes(S.tab) && !S.loadingCo){
+    body = viewCollect();
+  } else if (S.view === "company" && CO()){
     body = S.loadingCo ? '<p class="note">Opening ' + esc(CO().name) + "…</p>" :
       ((S.tab === "invoices" || S.tab === "export") && (!S.bank || S.bank.cid !== CO().id) && !S.bankCtxLoading ? (S.bankCtxLoading = true, loadBank(CO().id).then(() => { S.bankCtxLoading = false; autoMapCompanyLedgers(CO()); render(); }), "") : "") +
       (S.tab === "invoices" ? viewInvoices() : S.tab === "bank" ? viewBank() : S.tab === "sales" ? viewSales() : S.tab === "deductees" ? viewParties() : S.tab === "settings" ? viewCompanySettings() : viewExport());
   } else {
     S.view = "home";
-    body = S.homeTab === "inbox" ? viewInbox() : S.homeTab === "rules" ? viewRules() : viewClients();
+    body = S.homeTab === "today" ? viewToday() : S.homeTab === "inbox" ? viewInboxAll() : S.homeTab === "tally" ? viewTallyHome() : S.homeTab === "rules" ? viewRules() : viewClients();
   }
   app.innerHTML = selfTestBanner() + banner + body + actionBar();
   Object.entries(drafts).forEach(([id, v]) => { const el = document.getElementById(id); if (el && el.hasAttribute("data-draft") && el.value !== v) el.value = v; });
@@ -3871,25 +3932,146 @@ function render(){
   if (S.view === "company" && ["bank", "invoices", "export", "sales"].includes(S.tab) && typeof maybeLiveSync === "function") maybeLiveSync();
 }
 
+/* ================================================================== */
+/* The layout: a sidebar, and each client as Collect, Review, Post,    */
+/* Done. The screens inside are the ones the app already has.          */
+/* ================================================================== */
+const NAV = [
+  ["today", "Today", '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>'],
+  ["clients", "Clients", '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6c2.6.2 4.6 1.9 5.3 5.4"/>'],
+  ["inbox", "Inbox", '<path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>'],
+  ["tally", "Tally", '<path d="M4 12h12"/><path d="M12 6l6 6-6 6"/><path d="M20 4v16"/>'],
+  ["rules", "Settings", '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>']
+];
+function inboxTotal(){ return Object.values(S.docq || {}).filter(d => d.status === "waiting").length + Object.keys(S.inbox || {}).length; }
+function renderSide(){
+  const side = document.getElementById("side");
+  if (!side) return;
+  if (signInNeeded()){ side.innerHTML = ""; side.classList.add("hidden"); return; }
+  side.classList.remove("hidden");
+  const here = S.view === "company" ? "clients" : S.homeTab;
+  const counts = {inbox: inboxTotal()};
+  side.innerHTML = '<div class="side-brand">TDS Desk<span>' + esc(S.firm.firmName || "") + "</span></div>" +
+    NAV.map(([id, label, icon]) => '<button class="side-link" data-nav="' + id + '"' + (here === id ? ' aria-current="page"' : "") + ">" +
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' + icon + "</svg>" +
+      "<span>" + label + "</span>" + (counts[id] ? '<span class="side-count">' + counts[id] + "</span>" : "") + "</button>").join("") +
+    '<div class="side-grow"></div><div class="side-foot">' + bridgeChip(S.view === "company" ? CO() : null) + cloudChip() +
+    (Cloud.on() ? '<div class="side-who">' + whoChipInner() + '</div><button class="side-out" data-act="signOutNow">Sign out</button>' : "") +
+    '<div class="side-ver">' + esc(APP_VERSION.split("\u00b7")[1] || APP_VERSION) + "</div></div>";
+}
+/* ---------- which step and which kind of document a client is showing ---------- */
+function docType(){ return S.tab === "bank" ? "bank" : S.tab === "sales" ? "sales" : "bills"; }
+function curStep(){
+  if (S.step === "collect") return "collect";
+  const t = docType();
+  if (t === "bills") return S.tab === "export" ? "post" : ["approved", "rejected"].includes(S.filter) ? "done" : "review";
+  if (t === "bank"){ const f = (S.bank && S.bank.filter) || "review"; return f === "ready" ? "post" : ["done", "all"].includes(f) ? "done" : "review"; }
+  return "review";
+}
+function goStep(step, type){
+  type = type || docType();
+  S.step = step === "collect" ? "collect" : null;
+  S.selected = null; S.reviewTable = false;
+  if (type === "bills"){
+    S.tab = step === "post" ? "export" : "invoices";
+    if (step === "review") S.filter = "draft";
+    if (step === "done") S.filter = "approved";
+  } else if (type === "bank"){
+    S.tab = "bank";
+    if (S.bank && S.bank.cid === S.coId) S.bank.filter = step === "post" ? "ready" : step === "done" ? "done" : "review";
+    else S.pendingBankFilter = step === "post" ? "ready" : step === "done" ? "done" : "review";
+  } else S.tab = "sales";
+  render(); window.scrollTo(0, 0);
+}
+function stepCounts(){
+  const co = CO(), st = (co && co.stats) || {}, t = docType();
+  const inbox = docqCount(S.coId);
+  if (t === "bank" && S.bank && S.bank.cid === S.coId){
+    const c = tabCounts(S.bank.rows);
+    return {collect: inbox ? inbox + " in inbox" : "upload a statement", review: c.review + " to review", post: c.ready + " ready", done: c.done + " done"};
+  }
+  if (t === "sales"){
+    const n = S.sales && S.sales.cid === S.coId ? S.sales.list.length : 0;
+    return {collect: "upload or create", review: n + " invoices", post: "from the list", done: ""};
+  }
+  return {collect: inbox ? inbox + " in inbox" : "upload bills", review: (st.drafts || 0) + " to review", post: (st.waiting || 0) + " approved", done: (st.invoicesFy || 0) + " this year"};
+}
+function clientHeader(){
+  const co = CO(), setup = ["settings", "deductees"].includes(S.tab);
+  const now = curStep(), c = stepCounts();
+  const steps = [["collect", "1", "Collect"], ["review", "2", "Review"], ["post", "3", "Post to Tally"], ["done", "4", "Done"]];
+  const types = [["bills", "Purchase bills", (co.stats || {}).drafts || 0], ["bank", "Bank", S.bank && S.bank.cid === co.id ? tabCounts(S.bank.rows).review : 0], ["sales", "Sales", 0]];
+  let h = '<div class="chead"><div class="chead-name"><button class="linkbtn crumb" data-nav="clients">Clients</button><span class="crumb-sep">/</span>' +
+    "<h2>" + esc(co.name) + '</h2><span class="note">' + esc(co.gstin || "No GSTIN") + " \u00b7 FY " + fyOf(null) + "</span></div>" +
+    '<div class="chead-actions"><button class="linkbtn" data-act="setup">' + (setup ? "Back to the work" : "Client setup") + "</button>" +
+    '<button class="btn small" data-act="switch" title="Change client (F3)">Change client <kbd>F3</kbd></button></div></div>';
+  if (setup){
+    h += '<nav class="dtabs" aria-label="Client setup">' + [["settings", "Company and Tally"], ["deductees", "Suppliers and TDS"]].map(([id, l]) =>
+      '<button data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + l + "</button>").join("") + "</nav>";
+    return h;
+  }
+  h += '<div class="steps">' + steps.map(([id, n, label]) => '<button class="step" data-step="' + id + '"' + (now === id ? ' aria-current="step"' : "") + ">" +
+    '<span class="step-n">' + n + '</span><span class="step-t"><b>' + label + "</b><small>" + esc(c[id] || "") + "</small></span></button>").join("") + "</div>";
+  h += '<nav class="dtabs" aria-label="Kind of document">' + types.map(([id, l, n]) => '<button data-dtype="' + id + '" data-tab="' + (id === "bills" ? "invoices" : id) + '" aria-selected="' + (docType() === id) + '">' + l +
+    (n ? ' <span class="count">' + n + "</span>" : "") + "</button>").join("") + "</nav>";
+  return h;
+}
+/* ---------- Collect: everything that arrives for this client ---------- */
+function viewCollect(){
+  const t = docType();
+  if (t === "sales") return viewSales();
+  const inbox = docqPanel(S.coId);
+  const card = t === "bank"
+    ? '<section class="collect-card"><h3>Upload a bank statement</h3><p class="note">Excel, CSV or PDF from any bank. The balances are checked, and the statement is filed under the right account.</p>' +
+      '<button class="btn primary" data-act="bankPick">Choose a statement</button><input type="file" id="bankIn" accept=".xls,.xlsx,.csv,.pdf,.txt" multiple class="hidden"></section>'
+    : '<section class="collect-card"><h3>Upload purchase bills</h3><p class="note">PDFs, photos or scans, any number at once. Each is read free first; only the hard ones use OCR or Claude.</p>' +
+      '<button class="btn primary" data-act="collectBills">Choose bills</button></section>';
+  const recent = (S.jobs || []).slice(-6).reverse();
+  return (inbox || '<p class="note" style="margin:0 0 12px">Nothing waiting in the inbox for ' + esc(CO().name) + ".</p>") + card +
+    (recent.length && t === "bills" ? '<section class="collect-card"><h3>Read just now</h3><ul class="recent">' + recent.map(j => "<li><b>" + esc(j.name) + "</b> \u00b7 " + esc(j.status) + (j.msg ? ' <span class="note">' + esc(j.msg).slice(0, 90) + "</span>" : "") + "</li>").join("") +
+      '</ul><button class="btn small" data-step="review">Review them</button></section>' : "");
+}
+/* ---------- Today: what needs doing, across every client ---------- */
+function viewToday(){
+  const cos = sortedCompanies();
+  const tot = {read: inboxTotal(), review: 0, post: 0, problems: 0};
+  cos.forEach(c => { const s = c.stats || {}; tot.review += s.drafts || 0; tot.post += s.waiting || 0; tot.problems += (s.dups || 0) + (s.check || 0); });
+  const card = (label, n, warn, nav) => '<button class="metric' + (warn && n ? " warn" : "") + '"' + (nav ? ' data-nav="' + nav + '"' : "") + "><span>" + label + "</span><b>" + n + "</b></button>";
+  let h = '<section class="today"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0 0 12px">What needs doing</h2><button class="btn small" data-act="addCo">Add client</button></div>' +
+    '<div class="metrics">' + card("To read", tot.read, false, "inbox") + card("To review", tot.review) + card("To post", tot.post) + card("Need a look", tot.problems, true) + "</div>";
+  const rows = cos.map(c => { const s = c.stats || {}; return {c, read: docqCount(c.id), review: s.drafts || 0, post: s.waiting || 0, look: (s.dups || 0) + (s.check || 0)}; })
+    .sort((a, b) => (b.read + b.review + b.post + b.look) - (a.read + a.review + a.post + a.look));
+  if (!rows.length) return h + '<p class="note">No clients yet. <button class="linkbtn" data-nav="clients">Add your first client</button>.</p></section>';
+  const cell = (r, key, step) => r[key] ? '<button class="linkbtn tcell" data-goto="' + r.c.id + '" data-gstep="' + step + '">' + r[key] + "</button>" : '<span class="muted">\u2014</span>';
+  h += '<div class="tblwrap"><table class="data"><thead><tr><th>Client</th><th class="n">To read</th><th class="n">To review</th><th class="n">To post</th><th class="n">Need a look</th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td><button class="linkbtn" data-goto="' + r.c.id + '" data-gstep="review"><b>' + esc(r.c.name) + "</b></button>" + (r.c.gstin ? ' <span class="note">' + esc(r.c.gstin) + "</span>" : "") + "</td>" +
+      '<td class="n">' + cell(r, "read", "collect") + '</td><td class="n">' + cell(r, "review", "review") + '</td><td class="n">' + cell(r, "post", "post") + '</td><td class="n">' + cell(r, "look", "review") + "</td></tr>").join("") +
+    "</tbody></table></div>";
+  return h + '<p class="note" style="margin-top:8px">Counts cover clients opened on this computer; open a client to bring its figures up to date.</p></section>';
+}
+/* ---------- Inbox: every waiting document, and uploads that matched no client ---------- */
+function viewInboxAll(){
+  const cos = sortedCompanies().filter(c => docqFor(c.id).length);
+  let h = '<section class="today"><h2>Inbox</h2><p class="note" style="margin:0 0 12px">Documents from office automation, by client, and uploads that matched no client.</p></section>';
+  cos.forEach(c => { h += '<div class="inbox-client"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">' + esc(c.name) + '</h3><button class="btn small" data-goto="' + c.id + '" data-gstep="collect">Open this client</button></div>' + docqPanel(c.id) + "</div>"; });
+  if (docqFor("").length) h += '<div class="inbox-client"><h3 style="margin:0 0 6px">Not matched to a client</h3>' + docqPanel("") + "</div>";
+  const un = Object.keys(S.inbox || {}).length;
+  if (un) h += '<div class="inbox-client"><h3 style="margin:0 0 6px">Uploads that matched no client</h3>' + viewInbox() + "</div>";
+  if (!cos.length && !docqFor("").length && !un) h += '<p class="note">Nothing waiting. New documents appear here as soon as they arrive.</p>';
+  return h;
+}
+/* ---------- Tally: the connection, and everything sent ---------- */
+function viewTallyHome(){
+  return '<section class="today"><h2>Tally</h2></section>' + viewBridgeSettings() + viewPostLog();
+}
+
 function renderTop(){
   const bar = document.getElementById("cobar"), tabs = document.getElementById("tabs");
-  document.getElementById("firmLine").textContent = (S.firm.firmName || "") + " · " + APP_VERSION;
-  if (S.view === "company" && CO()){
-    const co = CO(), st = co.stats || {};
-    bar.innerHTML = '<div class="cochip"><span class="coname">' + esc(co.name) + '</span><span class="note">' + esc(co.gstin || "No GSTIN") + " · FY " + fyOf(null) + "</span></div>" +
-      whoChip() + cloudChip() + bridgeChip(co) +
-      '<button class="btn small" data-act="switch" title="Change company (F3)">Change company <kbd>F3</kbd></button>' +
-      '<button class="btn small" data-act="home" title="All clients (Esc)">All clients</button>' +
-      '<button class="btn small" data-act="openSettings">⚙ Settings</button>';
-    const t = [["invoices","Invoices", st.drafts || 0], ["bank","Bank", S.bank && S.bank.cid === co.id ? tabCounts(S.bank.rows).review : 0], ["sales","Sales", S.sales && S.sales.cid === co.id && !S.sales.loading ? salesCounts().review : 0], ["deductees","Deductees", 0], ["settings","Company settings", 0], ["export","Send to Tally", st.waiting || 0]];
-    tabs.innerHTML = t.map(([id, label, n]) => '<button role="tab" data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + label + (n ? '<span class="count">' + n + "</span>" : "") + "</button>").join("");
-  } else {
-    const n = Object.keys(S.inbox).length;
-    bar.innerHTML = whoChip() + cloudChip() + bridgeChip(null) + '<button class="btn small" data-act="switch" title="Select company (F3)">Select company <kbd>F3</kbd></button>' +
-      '<button class="btn small" data-act="openSettings">⚙ Settings</button>';
-    const t = [["clients","Clients", 0], ["inbox","Unsorted uploads", n], ["rules","Settings", 0]];
-    tabs.innerHTML = t.map(([id, label, c]) => '<button role="tab" data-htab="' + id + '" aria-selected="' + (S.homeTab === id) + '">' + label + (c ? '<span class="count">' + c + "</span>" : "") + "</button>").join("");
-  }
+  document.getElementById("firmLine").textContent = (S.firm.firmName || "") + " \u00b7 " + APP_VERSION;
+  renderSide();
+  const top = document.querySelector("header.top");
+  if (S.view === "company" && CO()){ bar.innerHTML = clientHeader(); tabs.innerHTML = ""; if (top) top.style.display = ""; }
+  else { bar.innerHTML = ""; tabs.innerHTML = ""; if (top) top.style.display = "none"; }
 }
 
 /* ---------- Home: client list ---------- */
@@ -10312,7 +10494,16 @@ document.addEventListener("click", ev => {
   if (S.view === "company" && S.tab === "sales" && salesClick(t)) return;
   if (t.id === "modal"){ if (ev.target.id === "modal") closeSwitcher(); return; }
   if (t.dataset.open){ openCompany(t.dataset.open); return; }
-  if (t.dataset.tab){ S.tab = t.dataset.tab; S.arm = null; render(); return; }
+  if (t.dataset.nav){ closeSwitcher(); S.view = "home"; S.homeTab = t.dataset.nav; S.step = null; S.addingCo = false; S.arm = null; if (t.dataset.nav === "rules") S.settingsTab = null; render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.step){ goStep(t.dataset.step); return; }
+  if (t.dataset.dtype){
+    const step = curStep(), type = t.dataset.dtype;
+    if (type === "bank" && (!S.bank || S.bank.cid !== S.coId)) loadBank(S.coId).then(() => { if (S.pendingBankFilter && S.bank){ S.bank.filter = S.pendingBankFilter; S.pendingBankFilter = null; } render(); });
+    goStep(step === "post" && type === "sales" ? "review" : step, type);
+    return;
+  }
+  if (t.dataset.goto){ const st = t.dataset.gstep || "review"; openCompany(t.dataset.goto).then(() => goStep(st, "bills")); return; }
+  if (t.dataset.tab){ S.tab = t.dataset.tab; S.step = null; S.arm = null; render(); return; }
   if (t.dataset.htab){ S.homeTab = t.dataset.htab; S.addingCo = false; render(); return; }
   if (t.dataset.filter){ S.filter = t.dataset.filter; S.selected = null; render(); return; }
   if (t.dataset.select){ S.selected = t.dataset.select; render(); if (window.innerWidth < 860){ const d = document.querySelector(".detail"); if (d) d.scrollIntoView({behavior:"smooth", block:"start"}); } return; }
@@ -10335,7 +10526,7 @@ document.addEventListener("click", ev => {
     case "home": goHome(); break;
     case "swHome": S.homeTab = "clients"; goHome(); break;
     case "swAdd": S.homeTab = "clients"; S.addingCo = true; goHome(); break;
-    case "addCo": S.addingCo = true; render(); { const n = document.getElementById("ncName"); if (n) n.focus(); } break;
+    case "addCo": S.view = "home"; S.homeTab = "clients"; S.addingCo = true; render(); { const n = document.getElementById("ncName"); if (n) n.focus(); } break;
     case "cancelCo": S.addingCo = false; render(); break;
     case "saveCo": saveNewCompany(); break;
     case "reread": if (e) rereadCarefully(e); break;
@@ -10415,6 +10606,8 @@ document.addEventListener("click", ev => {
       break;
     }
     case "dropKeyHide": S.newDropKey = null; render(); break;
+    case "setup": S.step = null; S.tab = ["settings", "deductees"].includes(S.tab) ? "invoices" : "settings"; render(); break;
+    case "collectBills": pickMode = "company"; document.getElementById("fileIn").click(); break;
     case "signOutNow": {
       askConfirm({title: "Sign out of TDS Desk?", ok: "Sign out", body: '<p class="note">You will need your email and password to come back in. Work already synced stays in your firm account.</p>'}).then(a => {
         if (!a) return;
