@@ -695,7 +695,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 87 (filter icon on each column: a panel with the right choices; chips show what is filtered)";
+const APP_VERSION = "22 Sep 2026 · build 88 (bank statements: OCR when the text cannot be followed, then Google OCR)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -2031,6 +2031,34 @@ async function testFreeOcr(){
 function googleSettings(){ try { return JSON.parse(lsGet("tdsdesk:gvision") || "{}"); } catch (e){ return {}; } }
 function hasGoogle(){ return (!!googleSettings().key || (Cloud.on() && !!S.account && moduleEnabled("vision"))) && !window.claude; }
 function moduleEnabled(code){ const m = ((S.account || {}).modules || []).find(x => x.code === code); return !m || m.enabled !== false; }
+function googleAvailable(){ return !!(googleSettings().key || (Cloud.on() && S.account)); }
+// Google OCR returning each word with its place on the page, so a statement's columns can be rebuilt
+async function googleWords(canvas){
+  const cfg = googleSettings();
+  const k = Math.min(1, 3000 / Math.max(canvas.width, canvas.height));
+  const blob = await canvasJpeg(canvas, Math.max(canvas.width, canvas.height) * k, 0.92);
+  const body = {requests: [{image: {content: await blobToBase64(blob)}, features: [{type: "DOCUMENT_TEXT_DETECTION"}], imageContext: {languageHints: ["en", "hi"]}}]};
+  let resp;
+  if (Cloud.on() && S.account && !cfg.key){
+    const j = await Cloud.fn("gateway", {what: "vision", qty: 1, ref: "bank statement page", payload: body});
+    resp = ((j.data || {}).responses || [])[0] || {};
+  } else if (cfg.key){
+    const res = await withTimeout(fetch("https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(cfg.key), {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}), 60000, "google_timeout");
+    const data = await res.json();
+    resp = ((data && data.responses) || [])[0] || {};
+    if (!res.ok || resp.error) throw {code: "google_error", message: (resp.error && resp.error.message) || res.status};
+  } else throw {code: "no_google_key"};
+  S.googleCount = (S.googleCount || 0) + 1;
+  const out = [];
+  ((resp.fullTextAnnotation || {}).pages || []).forEach(pg => (pg.blocks || []).forEach(bl => (bl.paragraphs || []).forEach(pa => (pa.words || []).forEach(w => {
+    const s0 = (w.symbols || []).map(x => x.text).join("");
+    const v = ((w.boundingBox || {}).vertices || []), xs = v.map(q => q.x || 0), ys = v.map(q => q.y || 0);
+    if (!s0 || !xs.length) return;
+    const x0 = Math.min(...xs) / k, y0 = Math.min(...ys) / k, x1 = Math.max(...xs) / k, y1 = Math.max(...ys) / k;
+    out.push({s: s0, x: x0, y: y0, w: x1 - x0, h: y1 - y0, conf: Math.round((w.confidence == null ? 0.9 : w.confidence) * 100)});
+  }))));
+  return out;
+}
 async function googleOcr(canvas){
   const cfg = googleSettings();
   const k = Math.min(1, 3000 / Math.max(canvas.width, canvas.height));
@@ -5529,6 +5557,26 @@ function joinCell(k, ps, maxW){
   });
   return out;
 }
+// keep the statement's own separator: "01-Sep-" + "2026" -> "01-Sep-2026"; "02 Sep" + "2026" -> "02 Sep 2026"; "01/08/" + "2026" -> "01/08/2026"
+function joinDateYear(d, y){
+  d = String(d || "").trim(); y = String(y || "").trim();
+  if (/[-\/.]$/.test(d)) return d + y;
+  const sep = (d.match(/[-\/.]/) || [" "])[0];
+  return d + sep + y;
+}
+// The same on raw words, before columns are known: "01-Sep-" with "2026" just below it becomes "01-Sep-2026".
+function joinWrappedDateItems(items){
+  const partial = /^\d{1,2}[-\/. ]?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[-\/. ]?$|^\d{1,2}[-\/.]\d{1,2}[-\/.]$/i;
+  const out = items.slice(), used = new Set();
+  out.forEach(t => {
+    if (!partial.test(String(t.s || "").trim()) || bankDate(t.s)) return;
+    const lh = Math.max(8, t.h || 10) * 2.6;
+    const yr = out.filter(u => u !== t && !used.has(u) && /^(19|20)\d{2}$/.test(String(u.s).trim()) && t.y - u.y > 0.5 && t.y - u.y < lh && Math.abs(u.x - t.x) < Math.max(45, (t.w || 40)))
+      .sort((a, b) => (t.y - a.y) - (t.y - b.y))[0];
+    if (yr){ t.s = joinDateYear(t.s, yr.s); if (!bankDate(t.s)) return; used.add(yr); }
+  });
+  return out.filter(u => !used.has(u));
+}
 // A date wrapped over two lines in the date column is joined back together: "01-Sep-" above "2026".
 function joinWrappedDates(tokens){
   const partial = /^\d{1,2}[-\/. ]?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[-\/. ]?$|^\d{1,2}[-\/.]\d{1,2}[-\/.]?$/i;
@@ -5536,7 +5584,7 @@ function joinWrappedDates(tokens){
     const lh = Math.max(8, t.h || 10) * 2.6;
     const yr = tokens.filter(u => u !== t && !u.used && /^(19|20)?\d{2}$/.test(u.s) && t.y - u.y > 0.5 && t.y - u.y < lh && Math.abs(u.x - t.x) < 45)
       .sort((a, b) => (t.y - a.y) - (t.y - b.y))[0];
-    if (yr){ t.s = t.s.replace(/[-\/. ]?$/, "-") + yr.s; yr.used = true; }
+    if (yr){ const j = joinDateYear(t.s, yr.s); if (bankDate(j)){ t.s = j; yr.used = true; } }
   });
   for (let i = tokens.length - 1; i >= 0; i--) if (tokens[i].used) tokens.splice(i, 1);
 }
@@ -5634,7 +5682,7 @@ function parseByLines(pages){
   const rows = [], meta = [];
   let last = null, pageW = 600;
   pages.forEach((pg, pi) => {
-    const items = mergeWrapped(pg.items).flatMap(it => splitPiece(it));
+    const items = mergeWrapped(joinWrappedDateItems(pg.items)).flatMap(it => splitPiece(it));
     if (!items.length) return;
     pageW = Math.max(...items.map(it => it.x + it.w), 200);
     const minX = Math.min(...items.map(it => it.x));
@@ -5806,14 +5854,15 @@ async function statementImages(file, onPage){
   } else canvases.push(await imageToCanvas(file));
   return canvases;
 }
-async function parseScannedStatement(file, progress){
+async function parseScannedStatement(file, progress, engine){
   const canvases = await statementImages(file);
   const pages = [];
   for (let i = 0; i < canvases.length; i++){
-    if (progress) progress("Reading scanned page " + (i + 1) + " of " + canvases.length + "…");
+    if (progress) progress((engine === "google" ? "Google OCR: page " : "Reading page ") + (i + 1) + " of " + canvases.length + "…");
     const c = canvases[i];
-    const src = cropCanvas(c, 0, 0, c.width, c.height); enhanceCanvas(src);
-    const words = await ocrWords(src);
+    const src = cropCanvas(c, 0, 0, c.width, c.height);
+    if (engine !== "google") enhanceCanvas(src);
+    const words = engine === "google" ? await googleWords(src) : await ocrWords(src);
     pages.push({items: words.filter(w => w.conf > 20 && w.s.trim()).map(w => ({s: fixOcrNumber(w.s.trim()), x: w.x, y: src.height - w.y - w.h, w: w.w, h: w.h})), ocr: true});
   }
   return pages;
@@ -5823,7 +5872,7 @@ function parseByHeadings(pages){
   let cols = null, lastRow = null;
   const allRows = [], metaLines = [];
   pages.forEach(pg => {
-    const raw = pg.ocr ? joinOcrWords(pg.items) : pg.items;
+    const raw = joinWrappedDateItems(pg.ocr ? joinOcrWords(pg.items) : pg.items);
     const hb = headerBand(raw);
     let body = raw;
     if (hb){ if (!cols) raw.filter(it => it.y > hb.top).forEach(it => metaLines.push(it.s)); cols = hb.cols; body = raw.filter(it => it.y < hb.bottom - 1); }
@@ -5908,7 +5957,7 @@ async function readStatement(file, progress){
         if (diag.textChars >= 50) consider("PDF without headings", parseByLines(pages));
       } catch (e){ note("PDF without headings", null, e); }
     }
-    if (!best && (isImg || !diag.textChars || diag.textChars < 50 || (best && best.score < 3))){
+    if (!best || best.score < 3){                 // no text, or text whose layout the readers could not follow
       try {
         const ocrPages = await parseScannedStatement(file, progress);
         diag.ocrWords = ocrPages.reduce((a, p) => a + p.items.length, 0);
@@ -5916,6 +5965,14 @@ async function readStatement(file, progress){
         try { consider("OCR with headings", parseByHeadings(ocrPages)); } catch (e){ note("OCR with headings", null, e); }
         try { consider("OCR without headings", parseByLines(ocrPages.map(p => ({items: joinOcrWords(p.items)})))); } catch (e){ note("OCR without headings", null, e); }
       } catch (e){ note("OCR", null, e); }
+    }
+    if ((!best || best.score < 3) && googleAvailable()){
+      try {
+        const gPages = await parseScannedStatement(file, progress, "google");
+        diag.googleWords = gPages.reduce((a, p) => a + p.items.length, 0);
+        try { consider("Google OCR with headings", parseByHeadings(gPages)); } catch (e){ note("Google OCR with headings", null, e); }
+        try { consider("Google OCR without headings", parseByLines(gPages.map(p => ({items: joinOcrWords(p.items)})))); } catch (e){ note("Google OCR without headings", null, e); }
+      } catch (e){ note("Google OCR", null, e); }
     }
   } else throw {code: "bank_type", diag};
   if (!best) throw {code: "bank_unreadable", diag};
