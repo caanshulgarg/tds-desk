@@ -283,6 +283,8 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .signin-box .f{display:block}
 .signin-box .f span{display:block;font-size:13px;color:var(--muted);margin-bottom:3px}
 .signin-box input{width:100%;height:38px;border:1px solid var(--rule);border-radius:7px;padding:0 10px;font:inherit;background:var(--paper);color:var(--ink)}
+.tchip.signout{background:var(--sheet);border:1px solid var(--rule);color:var(--ink);cursor:pointer}
+.tchip.signout:hover{border-color:var(--stop);color:var(--stop)}
 .bigwarn{margin:10px 0;padding:12px 14px;border:2px solid var(--stop);border-radius:10px;background:var(--stop-soft);font-size:14px}
 .bigwarn b{font-size:15px}
 .phist{margin-top:5px;font-size:12.5px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
@@ -549,7 +551,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "21 Sep 2026 · build 61 (expense ledger from how the supplier was booked in Tally)";
+const APP_VERSION = "22 Sep 2026 · build 63 (sign out in the header, bank tabs fixed)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3798,7 +3800,7 @@ function render(){
     if (f0 && !document.activeElement.matches("input")) f0.focus();
     return;
   }
-  const banner = creditBanner() + (S.storeKind === "db" ? "" :
+  const banner = creditBanner() + (S.storeKind === "db" || (Cloud.on() && Cloud.st && !Cloud.st.error) ? "" :
     '<p class="banner">' + (S.storeKind === "local" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
   if (S.view === "company" && CO()){
@@ -6625,8 +6627,8 @@ function viewBank(){
     (hasLedgerList() ? '<select data-bankacc="' + acc.id + '">' + ledgerOptions("", BANK_GROUPS) + "</select>" : '<span class="note">Import the ledger list first.</span>') + "</div>";
   // tabs
   const tab = bankTab();
-  h += '<div class="bk-bar"><div class="bk-tabs" role="tablist">' + BANK_TABS.concat([]).map(([k, t]) => '<button role="tab" aria-selected="' + (tab === k) + '" data-btab="' + k + '">' + t + ' <span class="cnt">' + tc[k] + "</span></button>").join("") + "</div>" +
-    '<button role="tab" aria-selected="' + (tab === "rules") + '" data-btab="rules">Rules <span class="cnt">' + allRules().length + "</span></button>" +
+  h += '<div class="bk-bar"><div class="bk-tabs" role="tablist">' + BANK_TABS.concat([]).map(([k, t]) => '<button role="tab" aria-selected="' + (tab === k) + '" data-btab="' + k + '">' + t + ' <span class="cnt">' + tc[k] + "</span></button>").join("") +
+    '<button role="tab" aria-selected="' + (tab === "rules") + '" data-btab="rules">Rules <span class="cnt">' + allRules().length + "</span></button></div>" +
     (tab === "review" ? '<label class="bk-switch"><input type="checkbox" data-bgroup' + (b.grouped ? " checked" : "") + "> Group by party</label>" : "") +
     '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search the description, party or amount" value="' + esc(b.q) + '"></div>';
   h += dupFindHtml();
@@ -6680,7 +6682,9 @@ function bankRowHtml(r, tab){
     const label = r.state === "suggested" ? '<span class="src"' + tip + ">Suggested \u00b7 " + esc(r.srcLabel || "Match") + "</span>"
       : r.state === "ready" ? '<span class="src ok"' + tip + ">" + esc(r.source === "you" || r.userSet ? "Set by you" : (r.srcLabel || "Confirmed")) + (r.vtype === "Contra" ? " \u00b7 Contra" : "") + (r.billRef ? " \u00b7 Bill " + esc(r.billRef) : "") + "</span>"
       : '<span class="src muted"' + tip + ">" + esc(hasLedgerList() ? "No match found" : "Import the ledger list") + "</span>";
-    const perr = r.state === "ready" && r.postError ? '<span class="src bad" title="' + esc(r.postError) + '">Tally: ' + esc(r.postError) + "</span>" : "";
+    const held = B().postedTags && String(B().postedTags[fpHash(r.fp || r.id)] || "").startsWith("unconfirmed");
+    const perr = r.state === "ready" && r.postError ? '<span class="src bad" title="' + esc(r.postError) + '">Tally: ' + esc(r.postError) +
+      (held ? ' <button class="linkbtn" data-brow="notintally" data-rid="' + r.id + '">I checked \u2014 it is not in Tally</button>' : "") + "</span>" : "";
     const ruleTag = r.ruleId ? '<span class="src"><button class="linkbtn" data-redit="' + r.ruleId + '">rule: ' + esc(ruleLabel(allRules().find(x => x.id === r.ruleId) || {name: "gone"})) + "</button></span>" : "";
     ledgerCell = perr + '<input type="text" class="lgbox' + cls + '" data-bled="' + r.id + '" data-fk="bled:' + r.id + '" data-keeptyped data-ac="1" autocomplete="off" value="' + esc(r.ledger) + '" placeholder="Select ledger" aria-label="Ledger">' + label +
       ruleTag + (r.tdsAtPay ? '<span class="src">TDS ' + money(r.tdsAtPay) + " deducted at payment</span>" : "") +
@@ -7133,6 +7137,11 @@ function bankClick(t){
     });
     return true;
   }
+  if (t.dataset.brow === "notintally"){
+    const row = bankRow(t.dataset.rid);
+    if (row && B().postedTags){ delete B().postedTags[fpHash(row.fp || row.id)]; row.postError = ""; saveBank({rows: true, posted: true}); toast("It will be checked in Tally again, then posted."); render(); }
+    return true;
+  }
   if (t.dataset.brow === "unpost"){
     const row = bankRow(t.dataset.rid);
     if (row) unpostFromTally("bank", row, B().cid).then(ok => {
@@ -7544,14 +7553,14 @@ function guessBankLedger(a){
   return byName.length === 1 ? byName[0].name : "";
 }
 // Tally's own entries in this bank ledger: rows already booked are marked, and their ledgers are learnt
-async function syncBankBookFromTally(silent){
+async function syncBankBookFromTally(silent, win){
   const b = B(), co = CO(b.cid), st = curStmt();
   if (!st || !bridgeLive(co)) return 0;
   const acc = (co.bankAccounts || []).find(a => a.id === st.acctId);
   const ledger = acc && exactLedger(acc.ledger);
   if (!ledger) return 0;
   try {
-    const from = addDays(st.from || b.rows[0].date, -20), to = addDays(st.to || b.rows[b.rows.length - 1].date, 20);
+    const from = win ? win.from : addDays(st.from || b.rows[0].date, -20), to = win ? win.to : addDays(st.to || b.rows[b.rows.length - 1].date, 20);
     const j = await Bridge.call("/vouchers?company=" + encodeURIComponent(Bridge.openFor(co).name) + "&from=" + isoToTally(from) + "&to=" + isoToTally(to) + "&ledger=" + encodeURIComponent(ledger) + Bridge.pinQ());
     const entries = [];
     [].concat(j.vouchers || []).forEach(v => {
@@ -7566,6 +7575,14 @@ async function syncBankBookFromTally(silent){
       const other = (v.entries || []).find(e => e.ledger !== ledger);
       entries.push({date: tallyToIso(v.date), debit: a < 0 ? -a : 0, credit: a > 0 ? a : 0, party: (other && other.ledger) || v.party || "", vt: v.type || "", vn: v.number || "", guid: v.guid || "", inst: String(be.instrument || ""), narr: String(v.narration || "")});
     });
+    if (win){
+      // a short look before posting: match only the lines about to go, and never reopen anything
+      b.books[st.acctId] = {entries, file: "Tally (live, " + from + " to " + to + ")", importedAt: new Date().toISOString(), live: true, partial: true};
+      const n0 = matchTallyBook(acc, win.rows, false);
+      saveBank({rows: true});
+      if (win.throwOnError === false) return n0;
+      return n0;
+    }
     b.books[st.acctId] = {entries, file: "Tally (live)", importedAt: new Date().toISOString(), live: true};
     saveBank({books: true});
     const n = matchTallyBook(acc, b.rows, true);
@@ -7573,7 +7590,7 @@ async function syncBankBookFromTally(silent){
     b.syncedAt = b.syncedAt || {}; b.syncedAt[st.id] = Date.now();
     if (!silent) toast("Checked against Tally: " + entries.length + " entries in " + ledger + ", " + n + " already booked.");
     return n;
-  } catch (e){ if (!silent) toast("Could not read the bank ledger from Tally: " + e.message); return 0; }
+  } catch (e){ if (win) throw e; if (!silent) toast("Could not read the bank ledger from Tally: " + e.message); return 0; }
 }
 let bankSyncing = false;
 async function bankAutoSync(force){
@@ -7726,26 +7743,25 @@ async function postBankToTally(ids){
     const tag = fpHash(r.fp || r.id);
     if (b.postedTags[tag]){ r.prevState = r.state; r.state = "intally"; r.tallyHow = "posted by TDS Desk on " + fmtDate(String(b.postedTags[tag]).slice(0, 10)); }
   });
-  // guard 2: look in Tally itself, but only at the dates of the lines about to be posted
+  // guard 2: look in Tally itself around the dates being posted, for our own entries and for ones typed in by hand
   const toCheck = b.rows.filter(r => r.state === "ready" && (!ids || ids.includes(r.id)));
   if (toCheck.length && !heavy){
     const ds = toCheck.map(r => r.date).sort();
+    const wide = toCheck.some(r => r.dec && r.dec.mode === "CHQ") ? 15 : 4;
     try {
       b.busy = "Checking Tally for these dates\u2026"; render();
-      const j = await Bridge.call("/vouchers?company=" + encodeURIComponent(tname) + "&from=" + isoToTally(ds[0]) + "&to=" + isoToTally(ds[ds.length - 1]) + "&ledger=" + encodeURIComponent(acc.ledger) + Bridge.pinQ(), null, 180000);
-      const narrs = [].concat(j.vouchers || []).filter(v => !/^yes$/i.test(v.cancelled || "")).map(v => String(v.narration || "").toUpperCase()).join("\n");
-      toCheck.forEach(r => {
-        const tag = "TDSDESK:" + fpHash(r.fp || r.id).toUpperCase();
-        if (narrs.includes(tag)){ r.prevState = r.state; r.state = "intally"; r.tallyHow = "already in Tally (posted by TDS Desk)"; b.postedTags[fpHash(r.fp || r.id)] = b.postedTags[fpHash(r.fp || r.id)] || new Date().toISOString(); }
-      });
+      await syncBankBookFromTally(true, {from: addDays(ds[0], -wide), to: addDays(ds[ds.length - 1], wide), rows: toCheck});
+      toCheck.forEach(r => { if (r.state === "intally") b.postedTags[fpHash(r.fp || r.id)] = b.postedTags[fpHash(r.fp || r.id)] || "tally:" + new Date().toISOString(); });
       saveBank({posted: true});
     } catch (e){
-      // if Tally cannot be read, do not post blind
       b.busy = ""; render();
       toast("Tally could not be checked for these dates (" + e.message + "), so nothing was posted. Try again in a moment.");
       return;
     }
   }
+  // guard 3: a line that does not agree with the statement's running balance was probably misread, so it is not posted
+  const misread = b.rows.filter(r => r.state === "ready" && (!ids || ids.includes(r.id)) && r.balOk === false);
+  misread.forEach(r => { r.state = "attention"; r.why = ["This line does not agree with the statement\u2019s running balance, so it may have been misread. Check the amount against the bank statement before posting."]; });
   const skipped = b.rows.filter(r => r.state === "intally").length - inTallyBefore;
   const movedBack = b.rows.filter(r => readyBefore.has(r.id) && ["attention", "suggested"].includes(r.state)).length;
   let rows = b.rows.filter(r => r.state === "ready" && (!ids || ids.includes(r.id)));
@@ -9419,6 +9435,9 @@ function startCloudSync(){
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Cloud.on() && Cloud.cfg().auto !== false) cloudSync(false); });
 function whoChip(){
   if (!Cloud.on()) return "";
+  return whoChipInner() + '<button class="tchip signout" data-act="signOutNow" title="Sign out of TDS Desk">\u23fb Sign out</button>';
+}
+function whoChipInner(){
   const a = S.account, who = a && a.me ? (a.me.name || a.me.email) : Cloud.st.email;
   return '<button class="tchip" data-act="openSettings" title="' + esc(Cloud.st.email) + '">' + esc(who) + (a && a.superadmin ? " \u00b7 administrator" : a && a.me ? " \u00b7 " + esc(a.me.role) : "") + "</button>";
 }
@@ -10148,6 +10167,15 @@ document.addEventListener("click", ev => {
       break;
     }
     case "useOffline": Cloud.setCfg({gate: false}); toast("Working on this computer only. Sign in later from Settings to share with the firm."); render(); break;
+    case "signOutNow": {
+      askConfirm({title: "Sign out of TDS Desk?", ok: "Sign out", body: '<p class="note">You will need your email and password to come back in. Work already synced stays in your firm account.</p>'}).then(a => {
+        if (!a) return;
+        Cloud.signOut(); clearInterval(cloudTimer); S.account = null; S.adminData = null; S.backups = null; S.settingsTab = null;
+        Cloud.setCfg({gate: true});            // signing out always brings the sign-in screen back
+        S.view = "home"; S.coId = null; toast("Signed out."); render();
+      });
+      break;
+    }
     case "showSignUp": S.signUpOpen = true; Cloud.st.error = ""; render(); break;
     case "showSignIn": S.signUpOpen = false; Cloud.st.error = ""; render(); break;
     case "cloudSignUp": {
