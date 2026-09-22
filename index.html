@@ -287,6 +287,8 @@ button.tchip{border:0;cursor:pointer;font:inherit;font-size:12.5px;font-weight:6
 .tchip.signout:hover{border-color:var(--stop);color:var(--stop)}
 .bigwarn{margin:10px 0;padding:12px 14px;border:2px solid var(--stop);border-radius:10px;background:var(--stop-soft);font-size:14px}
 .bigwarn b{font-size:15px}
+.docq{margin:0 0 12px;padding:12px 14px;border:1px solid var(--ledger);border-radius:10px;background:var(--sheet)}
+.docq h3{font-size:15px}
 .phist{margin-top:5px;font-size:12.5px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
 .phist .chip{border:1px solid var(--rule);background:var(--paper);border-radius:12px;padding:2px 9px;font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink)}
 .phist .chip.on{border-color:var(--ledger);background:transparent;color:var(--ledger) !important;font-weight:600}
@@ -551,7 +553,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 63 (sign out in the header, bank tabs fixed)";
+const APP_VERSION = "22 Sep 2026 · build 64 (document inbox for each client)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3294,6 +3296,7 @@ function pump(){
     runJob(j).catch(err => { j.status = "failed"; j.msg = errCopy(err && err.code); })
       .finally(() => {
         activeJobs--;
+        try { if (j.file && j.file.__docq) docqFinish(j); } catch (e){}
         if (j.ownsPending){ delete S.pendingHashes[j.hash]; j.ownsPending = false; }
         const prev = j.prev;
         j.prev = null;
@@ -3867,7 +3870,7 @@ function viewClients(){
   if (!cos.length) h += '<tr><td colspan="7" class="note">No client matches \u201c' + esc(S.homeQuery) + "\u201d.</td></tr>";
   cos.forEach(c => {
     const st = c.stats || {}, cur = st.fy === fyOf(null);
-    h += '<tr class="rowlink" data-open="' + c.id + '"><td><b>' + esc(c.name) + "</b>" + (c.tallyName && c.tallyName !== c.name ? '<div class="note">Tally: ' + esc(c.tallyName) + "</div>" : "") +
+    h += '<tr class="rowlink" data-open="' + c.id + '"><td><b>' + esc(c.name) + "</b>" + (docqCount(c.id) ? ' <span class="tag" title="Files waiting in the inbox">\u{1F4E5} ' + docqCount(c.id) + "</span>" : "") + (c.tallyName && c.tallyName !== c.name ? '<div class="note">Tally: ' + esc(c.tallyName) + "</div>" : "") +
       "</td><td>" + esc(c.gstin || "—") + '</td><td class="n">' + (st.drafts || "—") + '</td><td class="n">' + (st.check ? '<span class="tag warn">' + st.check + "</span>" : "—") +
       '</td><td class="n">' + (st.waiting ? '<span class="tag ok">' + st.waiting + "</span>" : "—") + '</td><td class="n">' + (cur && st.tdsFy ? money0(st.tdsFy) : "—") +
       '</td><td class="n">' + (freeRate(c) ? '<span class="tag ' + (freeRate(c).pct >= 90 ? "ok" : "warn") + '" title="' + freeRate(c).free + " free, " + freeRate(c).google + " Google, " + freeRate(c).claude + ' Claude">' + freeRate(c).pct + "% of " + freeRate(c).n + "</span>" : "—") +
@@ -3889,6 +3892,7 @@ function addCompanyForm(){
 /* ---------- Home: unsorted uploads ---------- */
 function viewInbox(){
   const items = Object.values(S.inbox).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!items.length && docqFor("").length) return docqPanel("");
   if (!items.length) return '<div class="pane" style="margin-top:0"><h2>Nothing unsorted</h2><p class="note" style="margin:0">Invoices uploaded from the client list land here only when their buyer does not match a client.</p></div>';
   const opts = '<option value="">Choose client…</option>' + sortedCompanies().map(c => '<option value="' + c.id + '">' + esc(c.name) + "</option>").join("");
   let h = '<div class="tblwrap"><table class="data"><thead><tr><th>File</th><th>Supplier</th><th>Billed to</th><th class="n">Total</th><th>Why it is here</th><th>Move to</th><th></th></tr></thead><tbody>';
@@ -4128,6 +4132,153 @@ async function reviewCheckTally(list){
   toast(done ? "Checked " + done + " supplier" + (done === 1 ? "" : "s") + " in Tally." + (failed ? " " + failed + " could not be read." : "") : "Nothing to check: the suppliers need a Tally ledger and a saved PAN.");
   render();
 }
+/* ================================================================== */
+/* Document inbox: files dropped in by the agent, waiting to be read  */
+/* ================================================================== */
+S.docq = S.docq || {};
+const DOCQ_OPEN = ["waiting", "reading", "failed"];
+function docqFor(cid){ return Object.values(S.docq).filter(d => (d.client_id || "") === (cid || "") && DOCQ_OPEN.includes(d.status)).sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt))); }
+function docqCount(cid){ return docqFor(cid).filter(d => d.status === "waiting").length; }
+let docqAt = 0;
+async function loadDocq(force){
+  if (!Cloud.on()) return;
+  if (!force && Date.now() - docqAt < 60000) return;
+  docqAt = Date.now();
+  try {
+    const rows = await Cloud.api("records?kind=eq.doc_inbox&deleted=eq.false&select=id,client_id,data,updated_at&order=updated_at.desc&limit=1000");
+    const before = JSON.stringify(Object.keys(S.docq).sort().map(k => k + S.docq[k].status));
+    const next = {};
+    [].concat(rows || []).forEach(r => { next[r.id] = Object.assign({}, r.data, {id: r.id, client_id: r.client_id || ""}); });
+    // a read in progress on this computer keeps its local state
+    Object.values(S.docq).forEach(d => { if (d.status === "reading" && d.localRead && next[d.id]) next[d.id].status = "reading"; });
+    S.docq = next;
+    if (JSON.stringify(Object.keys(S.docq).sort().map(k => k + S.docq[k].status)) !== before) render();
+  } catch (e){ /* the inbox is best effort; the rest of the app keeps working */ }
+}
+async function docqSave(d){
+  const data = Object.assign({}, d); delete data.id; delete data.client_id; delete data.localRead;
+  await Cloud.api("records?on_conflict=firm_id,kind,id", {method: "POST", headers: {Prefer: "resolution=merge-duplicates,return=minimal"},
+    body: [{firm_id: Cloud.st.firm, kind: "doc_inbox", id: d.id, client_id: d.client_id || "", data, deleted: false}]});
+}
+async function docqFile(d){
+  const c = Cloud.cfg(), s = Cloud.sess();
+  const url = c.url.replace(/\/+$/, "") + "/storage/v1/object/doc-inbox/" + d.file.path.split("/").map(encodeURIComponent).join("/");
+  let r = await fetch(url, {headers: {apikey: c.key, Authorization: "Bearer " + s.access_token}});
+  if (r.status === 401 || r.status === 400){ await Cloud.refreshToken(); r = await fetch(url, {headers: {apikey: c.key, Authorization: "Bearer " + Cloud.sess().access_token}}); }
+  if (!r.ok) throw new Error("the file could not be fetched (" + r.status + ")");
+  const blob = await r.blob();
+  return new File([blob], d.file.name || "document", {type: d.file.mime || blob.type || "application/octet-stream"});
+}
+// read waiting files through the normal pipeline: free reading, OCR, checks and the usual charge
+async function readDocq(ids, cid){
+  const list = ids.map(id => S.docq[id]).filter(d => d && d.status !== "done");
+  if (!list.length) return;
+  const bills = [], banks = [];
+  for (const d of list){
+    d.status = "reading"; d.localRead = true; d.startedAt = new Date().toISOString(); d.error = "";
+    try { await docqSave(d); } catch (e){}
+    try {
+      const f = await docqFile(d);
+      f.__docq = d.id;
+      if (d.docType === "bank" || (d.docType === "auto" && isBankFile(f) && !isPdf(f) && !isImage(f))) banks.push({d, f}); else bills.push(f);
+    } catch (e){
+      d.status = "failed"; d.error = e.message; d.localRead = false;
+      try { await docqSave(d); } catch (e2){}
+    }
+  }
+  render();
+  if (bills.length) await enqueueFiles(bills, cid || "auto");
+  if (banks.length){
+    if (!cid){ banks.forEach(x => { x.d.status = "failed"; x.d.error = "Bank statements need a client: assign it first."; docqSave(x.d).catch(() => {}); }); }
+    else {
+      if (S.coId !== cid) await openCompany(cid);
+      S.tab = "bank"; render();
+      await loadBank(cid);
+      for (const x of banks){
+        const before = (S.bank.stmts || []).length;
+        try { await uploadStatements([x.f]); } catch (e){}
+        const got = (S.bank.stmts || []).length > before;
+        x.d.status = got ? "done" : "failed"; x.d.localRead = false; x.d.readAt = new Date().toISOString();
+        x.d.result = got ? {kind: "statement", id: S.bank.stmts[S.bank.stmts.length - 1].id} : null;
+        if (!got) x.d.error = "The statement could not be read, or it was uploaded before.";
+        await docqSave(x.d).catch(() => {});
+      }
+    }
+  }
+  render();
+}
+// called when a job that came from the inbox finishes
+function docqFinish(j){
+  const id = j.file && j.file.__docq;
+  const d = id && S.docq[id];
+  if (!d) return;
+  d.localRead = false; d.readAt = new Date().toISOString();
+  if (j.status === "done" || j.status === "partial"){ d.status = "done"; d.result = {kind: "bill", entryId: j.entryId || "", cid: j.cid || "", how: j.method || "", partial: j.status === "partial"}; if (j.cid && !d.client_id) d.client_id = j.cid; }
+  else if (j.status === "duplicate"){ d.status = "done"; d.result = {kind: "duplicate", note: j.msg || "already read before"}; }
+  else { d.status = "failed"; d.error = j.msg || "could not be read"; }
+  docqSave(d).catch(() => {});
+  softRender();
+}
+async function setAsideDocq(id){
+  const d = S.docq[id]; if (!d) return;
+  d.status = "set_aside"; d.readAt = new Date().toISOString();
+  await docqSave(d).catch(e => toast(e.message));
+  render();
+}
+async function assignDocq(id, cid){
+  const d = S.docq[id]; if (!d || !CO(cid)) return;
+  d.client_id = cid; d.status = "waiting"; d.error = "";
+  await docqSave(d).catch(e => toast(e.message));
+  toast("Moved to " + CO(cid).name + "'s inbox.");
+  render();
+}
+/* ---------- on screen ---------- */
+function docqPanel(cid){
+  if (!Cloud.on()) return "";
+  const list = docqFor(cid);
+  if (!list.length) return "";
+  const waiting = list.filter(d => d.status === "waiting").length;
+  const ago = t => { const m = Math.round((Date.now() - new Date(t).getTime()) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
+  const typeTxt = {bill: "bill", bank: "bank statement", sales: "sales invoice", auto: ""};
+  const others = Object.values(S.companies).filter(c => c.id !== cid).sort((a, b) => a.name.localeCompare(b.name));
+  return '<section class="docq"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">\u{1F4E5} Inbox \u00b7 ' + waiting + " waiting" + (list.length > waiting ? " \u00b7 " + (list.length - waiting) + " other" : "") + "</h3>" +
+    (waiting ? '<button class="btn small primary" data-act="docqReadAll">Read all ' + waiting + "</button>" : "") + "</div>" +
+    '<p class="note" style="margin:4px 0 8px">Files sent in by the agent or a colleague. They are read the same way as an upload, and charged the same.</p>' +
+    '<div class="tblwrap"><table class="data"><thead><tr><th>File</th><th>From</th><th>Received</th><th>Note</th><th></th></tr></thead><tbody>' +
+    list.map(d => "<tr><td><b>" + esc(d.file.name) + "</b>" + (typeTxt[d.docType] ? ' <span class="tag">' + typeTxt[d.docType] + "</span>" : "") +
+      (d.status === "reading" ? ' <span class="tag">reading\u2026</span>' : d.status === "failed" ? '<div class="nr bad">' + esc(d.error || "could not be read") + "</div>" : "") + "</td>" +
+      "<td>" + esc(d.source || "") + (d.sender ? '<div class="nr">' + esc(d.sender) + "</div>" : "") + "</td><td>" + ago(d.receivedAt) + "</td><td>" + esc(d.note || "") + "</td>" +
+      '<td style="white-space:nowrap">' + (d.status === "reading" ? "" : '<button class="btn small" data-docqread="' + d.id + '">' + (d.status === "failed" ? "Try again" : "Read") + "</button> ") +
+      (cid === "" && others.length ? '<select data-docqmove="' + d.id + '"><option value="">Assign to\u2026</option>' + Object.values(S.companies).sort((a, b) => a.name.localeCompare(b.name)).map(c => '<option value="' + c.id + '">' + esc(c.name) + "</option>").join("") + "</select> " : "") +
+      '<button class="linkbtn" data-docqaside="' + d.id + '">Set aside</button></td></tr>').join("") + "</tbody></table></div></section>";
+}
+/* ---------- drop keys: how the agent is allowed to send files in ---------- */
+function viewDropKeys(){
+  if (!Cloud.on()) return "";
+  const a = S.account, owner = a && ((a.me || {}).role === "owner" || a.superadmin);
+  if (!owner) return "";
+  const keys = S.dropKeys;
+  const url = Cloud.cfg().url.replace(/\/+$/, "") + "/functions/v1/inbox-drop";
+  let h = '<h3 style="margin:16px 0 6px;font-size:15px">Document inbox: keys for the agent</h3>' +
+    '<p class="note" style="margin:0 0 6px">A drop key lets the agent, or a WhatsApp or email bridge, put files into a client\u2019s inbox. It cannot read anything, see other clients, or post to Tally. Switch a key off at any time.</p>' +
+    '<div class="row"><button class="btn small" data-act="dropKeysList">' + (keys ? "Refresh" : "Show keys") + '</button><button class="btn small primary" data-act="dropKeyNew">Make a key</button></div>';
+  if (S.newDropKey){
+    h += '<div class="bigwarn" style="border-color:var(--ledger)"><b>Copy this key now. It will not be shown again.</b>' +
+      '<div style="margin-top:6px"><code style="font-size:13px;user-select:all">' + esc(S.newDropKey) + "</code></div>" +
+      '<div style="margin-top:8px">Give the agent these instructions:</div>' +
+      '<pre style="white-space:pre-wrap;font-size:12px;background:var(--paper);padding:8px;border-radius:6px;user-select:all">POST ' + esc(url) + "\nHeader  X-Drop-Key: " + esc(S.newDropKey) +
+      '\nHeader  Content-Type: application/json\nBody\n{\n  "client_gstin": "09AAAAA0000A1Z5",       (or "client_name": "Srishti Enterprises")\n  "file_name": "bill.pdf",\n  "file_base64": "&lt;the file, base64&gt;",\n  "doc_type": "bill",                        (bill, bank, sales or auto)\n  "source": "WhatsApp",\n  "sender": "Client accountant",\n  "note": "September purchase bills"\n}</pre>' +
+      '<button class="linkbtn" data-act="dropKeyHide">I have copied it</button></div>';
+  }
+  if (keys && keys.length){
+    h += '<div class="tblwrap" style="margin-top:8px"><table class="data"><thead><tr><th>Label</th><th>Ends in</th><th>Made</th><th class="n">Files sent</th><th>Last used</th><th></th></tr></thead><tbody>' +
+      keys.map(k => "<tr" + (k.active ? "" : ' style="opacity:.55"') + "><td>" + esc(k.label) + "</td><td>\u2026" + esc(k.hint) + "</td><td>" + fmtDate(String(k.created_at).slice(0, 10)) +
+        '</td><td class="n">' + (k.uses || 0) + "</td><td>" + (k.last_used ? fmtDate(String(k.last_used).slice(0, 10)) : "\u2014") + "</td><td>" +
+        (k.active ? '<button class="linkbtn" data-dropoff="' + k.id + '">Switch off</button>' : "off") + "</td></tr>").join("") + "</tbody></table></div>";
+  } else if (keys) h += '<p class="note" style="margin-top:6px">No keys yet.</p>';
+  return h;
+}
+
 function viewInvoices(){
   if (S.reviewTable && S.filter === "draft") return viewReviewTable();
   const d = D(), co = CO(), all = Object.values(d.entries);
@@ -4146,7 +4297,7 @@ function viewInvoices(){
       '</span><span class="m">' + readBadge(e.readMode) + " " + esc([e.x.invoiceNo, e.x.invoiceDate ? fmtDate(e.x.invoiceDate) : ""].filter(Boolean).join(", ") || e.fileName) + '</span><span class="t">' + tag + "</span></button></li>";
   }).join("");
   const emptyMsg = S.filter === "draft" ? "No drafts for " + co.name + ". Upload invoices above." : S.filter === "approved" ? "Nothing approved yet." : S.filter === "duplicate" ? "No duplicates held." : "Nothing marked as no entry.";
-  return '<div class="desk"><div>' +
+  return docqPanel(S.coId) + '<div class="desk"><div>' +
     '<div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload invoices for ' + esc(co.name) + '"><strong>Upload for ' + esc(co.name) + '</strong><div class="note">Drop any number of PDFs, JPGs or photos here, or click to choose</div>' +
     "</div>" + readingCheck() + (freeRate(co) ? '<p class="note" style="margin:6px 0 0">Read free for this client: <b>' + freeRate(co).pct + "%</b> of " + freeRate(co).n + " bills (" + freeRate(co).google + " by Google OCR, " + freeRate(co).claude + " by Claude)</p>" : "") + uploadOptions() +
     '<div class="row" style="margin-top:8px"><button class="btn small" data-act="camera">Take photo</button><button class="btn small" data-act="manual">Type an invoice</button><button class="btn small" data-act="pasteOpen">Paste bill details</button></div>' +
@@ -7484,6 +7635,8 @@ async function bridgeTick(first){
     } else renderTop();
   } finally { bridgeBusy = false; }
 }
+// the inbox is looked at every two minutes while the window is in front: a small database call, nothing asked of Tally
+setInterval(() => { if (document.visibilityState === "visible" && Cloud.on()) loadDocq(true); }, 120000);
 function startBridgePolling(){
   // ask Tally rarely: it serves other people on the same server
 
@@ -9351,6 +9504,7 @@ async function cloudApply(rows){
       else { bag[r.id] = clone(r.data); if (r.kind === "entry") Store.saveEntry(cid, bag[r.id]); else Store.saveParty(cid, bag[r.id]); }
     }
     else if (r.kind === "inbox"){ if (r.deleted) delete S.inbox[r.id]; else { S.inbox[r.id] = clone(r.data); Store.saveInbox(S.inbox[r.id]); } }
+    else if (r.kind === "doc_inbox"){ if (r.deleted) delete S.docq[r.id]; else if (!(S.docq[r.id] && S.docq[r.id].localRead)) S.docq[r.id] = Object.assign({}, r.data, {id: r.id, client_id: r.client_id || ""}); }
     else if (r.kind === "bank_meta"){ await cloudApplyBankMeta(cid, r); touchedBank.add(cid); }
     else if (r.kind === "bank_stmt" || r.kind === "bank_rows"){ await cloudApplyBankPart(r); touchedBank.add(cid); }
     else if (r.kind === "sales" || r.kind === "sales_cfg"){ await cloudApplySales(r); touchedSales.add(cid); }
@@ -9487,6 +9641,7 @@ Cloud.fn = async function(name, body){
   return j;
 };
 async function loadAccount(quiet){
+  setTimeout(() => loadDocq(true), 0);
   if (!Cloud.on()) return null;
   try {
     const a = await Cloud.rpc("my_account");
@@ -9566,7 +9721,7 @@ function walletHtml(){
 function viewAccountPeopleOnly(){
   const a = S.account;
   if (!a) return "";
-  return '<div class="pane">' + viewPeople((a.me || {}).role === "owner" || a.superadmin === true) + viewBackups() + "</div>";
+  return '<div class="pane">' + viewPeople((a.me || {}).role === "owner" || a.superadmin === true) + viewDropKeys() + viewBackups() + "</div>";
 }
 function viewBackups(){
   if (!Cloud.on()) return "";
@@ -9931,6 +10086,7 @@ function openSwitcher(){ if (!Object.keys(S.companies).length){ goHome(); S.addi
 function closeSwitcher(){ S.switcher = null; renderSwitcher(); }
 
 async function openCompany(cid){
+  loadDocq().catch(() => {});
   if (!S.companies[cid]) return;
   closeSwitcher();
   const changed = S.coId !== cid;
@@ -9965,6 +10121,15 @@ document.addEventListener("click", ev => {
       saveFile("tds-desk-backup-" + new Date().toISOString().slice(0, 10) + ".json", new Blob([JSON.stringify(d, null, 1)], {type: "application/json"}));
       toast("Downloaded. Keep it somewhere outside this system.");
     }, e => toast(e.message));
+    return;
+  }
+  if (t.dataset.docqread){ readDocq([t.dataset.docqread], S.view === "company" ? S.coId : ""); return; }
+  if (t.dataset.docqaside){ setAsideDocq(t.dataset.docqaside); return; }
+  if (t.dataset.dropoff){
+    askConfirm({title: "Switch this key off?", ok: "Switch it off", body: '<p class="note">Anything using this key will no longer be able to send files in.</p>'}).then(a => {
+      if (!a) return;
+      Cloud.rpc("revoke_drop_key", {p_id: t.dataset.dropoff}).then(() => Cloud.rpc("my_drop_keys")).then(k => { S.dropKeys = [].concat(k || []); render(); }, e => toast(e.message));
+    });
     return;
   }
   if (t.dataset.useexp){
@@ -10167,6 +10332,20 @@ document.addEventListener("click", ev => {
       break;
     }
     case "useOffline": Cloud.setCfg({gate: false}); toast("Working on this computer only. Sign in later from Settings to share with the firm."); render(); break;
+    case "docqReadAll": { const ids = docqFor(S.view === "company" ? S.coId : "").filter(d => d.status === "waiting").map(d => d.id); readDocq(ids, S.view === "company" ? S.coId : ""); break; }
+    case "dropKeysList": Cloud.rpc("my_drop_keys").then(r => { S.dropKeys = [].concat(r || []); render(); }, e => toast(e.message)); break;
+    case "dropKeyNew": {
+      askConfirm({title: "Make a drop key", ok: "Make it", body: '<div class="bk-form one"><label><span>What is it for?</span><input type="text" id="dkLabel" value="Cowork agent"></label></div>',
+        read: () => ({label: (document.getElementById("dkLabel") || {}).value || "Agent"})}).then(a => {
+        if (!a) return;
+        Cloud.rpc("create_drop_key", {p_label: a.data.label}).then(r => {
+          if (!r || r.ok === false){ toast((r && r.reason) || "Could not make a key."); return; }
+          S.newDropKey = r.key; return Cloud.rpc("my_drop_keys").then(k => { S.dropKeys = [].concat(k || []); render(); });
+        }, e => toast(e.message));
+      });
+      break;
+    }
+    case "dropKeyHide": S.newDropKey = null; render(); break;
     case "signOutNow": {
       askConfirm({title: "Sign out of TDS Desk?", ok: "Sign out", body: '<p class="note">You will need your email and password to come back in. Work already synced stays in your firm account.</p>'}).then(a => {
         if (!a) return;
@@ -10484,6 +10663,7 @@ document.addEventListener("change", ev => {
     Store.saveEntry(cid, e); refreshStats(cid); render(); return;
   }
   if (t.hasAttribute("data-pnotds")){ const p = D().parties[S.partySel]; if (p){ p.noTds = t.checked; if (t.checked && !p.noTdsReason) p.noTdsReason = "na"; Store.saveParty(cid, p); refreshStats(cid); render(); } return; }
+  if (t.dataset && t.dataset.docqmove !== undefined && t.value){ assignDocq(t.dataset.docqmove, t.value); return true; }
   if (t.hasAttribute("data-ptransporter")){ const p = D().parties[S.partySel]; if (p){ p.transporter = t.checked; Store.saveParty(S.coId, p); render(); } return true; }
   if (t.hasAttribute("data-pnotdsreason")){ const p = D().parties[S.partySel]; if (p){ p.noTdsReason = t.value; Store.saveParty(cid, p); render(); } return; }
   if (t.dataset.p === "natureDefault"){ const p = D().parties[S.partySel]; if (p){ p.natureDefault = t.value; Store.saveParty(cid, p); render(); } return; }
