@@ -695,7 +695,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 89 (Claude works on the plan; read again with Google OCR or Claude in bills, sales and bank)";
+const APP_VERSION = "22 Sep 2026 · build 90 (repair statement lines page by page; the same column filters in Sales)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -5484,7 +5484,7 @@ function rowsFromCells(list, cols, getCell, rowText){
     }
     if (!debit && !credit){ lastWasTxn = false; continue; }
     lastWasTxn = true;
-    out.push({date, valueDate: bankDate(g("valueDate")), narr, ref, debit: debit ? Math.abs(debit) : 0, credit: credit ? Math.abs(credit) : 0, balance});
+    out.push({date, valueDate: bankDate(g("valueDate")), narr, ref, page: raw.page || null, debit: debit ? Math.abs(debit) : 0, credit: credit ? Math.abs(credit) : 0, balance});
   }
   return out;
 }
@@ -5662,7 +5662,7 @@ async function parsePdfStatement(file){
     const maxW = Math.max(1, ...tokens.filter(t => t.k === "narr").map(t => t.w));
     // centred cells (text above the date) or top-aligned cells (text runs down from the date)
     const centred = anchors.length && tokens.some(t => (t.k === "narr" || t.k === "ref") && t.y > anchors[0].y + 2 && anchors.length > 1 && t.y < anchors[0].y + (anchors[0].y - anchors[1].y) / 2);
-    const rows = anchors.map(a => ({y: a.y, parts: {}}));
+    const rows = anchors.map(a => ({y: a.y, page: p, parts: {}}));
     tokens.forEach(t => {
       let r = null;
       if (!rows.length){ if (lastRow && !centred) r = lastRow; }
@@ -5724,8 +5724,10 @@ function fixOcrNumber(s){ return /^[\dOoIlS,.]+$/.test(s) && /\d/.test(s) && /[.
 // Heading-free reader: a transaction line has a date on the left and amounts on the right; the balance is the right-most amount.
 function parseByLines(pages){
   const rows = [], meta = [];
-  let last = null, pageW = 600;
+  let last = null, pageW = 600, curPage = 0;
   pages.forEach((pg, pi) => {
+    curPage = pg.page || pi + 1;
+    const markPage = r => { if (r && !r.page) r.page = curPage; };
     const items = mergeWrapped(joinWrappedDateItems(pg.items)).flatMap(it => splitPiece(it));
     if (!items.length) return;
     pageW = Math.max(...items.map(it => it.x + it.w), 200);
@@ -5793,7 +5795,7 @@ function parseByLines(pages){
         if (after && /^dr\.?$/i.test(after.s)) balance = -Math.abs(balance);
         const amts = money.slice(0, -1).filter(m => Math.abs(m.v) > 0);
         const row = {y: l.y, date, narr, amts, balance, balRight: bal.t.x + bal.t.w, drcr: toks.slice(firstMoney).map(t => t.s).join(" "), page: pi, cont: []};
-        txLines.push(row); rows.push(row); last = row;
+        row.page = curPage; txLines.push(row); rows.push(row); last = row;
       } else if (!date && !money.length){
         const text = toks.filter(t => !TIME_TOKEN.test(t.s)).map(t => t.s).join(" ");
         if (!rows.length && !txLines.length) meta.push(text);
@@ -5846,7 +5848,7 @@ function parseByLines(pages){
     }
     if (!r.dir && r.amts.length){ const t = r.amts[r.amts.length - 1].t.s; r.dir = /cr/i.test(t) ? "cr" : "dr"; }
     const narr = [r.narr].concat(r.cont.map(c => c.text)).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-    out.push({date: r.date, valueDate: "", narr, ref: "", debit: r.dir === "dr" ? r.amt : 0, credit: r.dir === "cr" ? r.amt : 0, balance: r.balance, noAmt: !r.amt});
+    out.push({date: r.date, valueDate: "", narr, ref: "", page: r.page || curPage, debit: r.dir === "dr" ? r.amt : 0, credit: r.dir === "cr" ? r.amt : 0, balance: r.balance, noAmt: !r.amt});
   });
   // a missing amount may be filled from the balance change; a printed amount is never replaced
   for (let i = 1; i < out.length; i++){
@@ -5915,7 +5917,8 @@ async function parseScannedStatement(file, progress, engine){
 function parseByHeadings(pages){
   let cols = null, lastRow = null;
   const allRows = [], metaLines = [];
-  pages.forEach(pg => {
+  pages.forEach((pg, pgi) => {
+    const pageNo = pg.page || pgi + 1;
     const raw = joinWrappedDateItems(pg.ocr ? joinOcrWords(pg.items) : pg.items);
     const hb = headerBand(raw);
     let body = raw;
@@ -5925,14 +5928,14 @@ function parseByHeadings(pages){
     mergeWrapped(body).forEach(it => splitPiece(it).forEach(t => { t.k = assignColumn(t, cols); if (t.k) tokens.push(t); }));
     joinWrappedDates(tokens);          // "01-Sep-" above "2026" (some ICICI statements) is one date
     const anchors = tokens.filter(t => t.k === "date" && bankDate(t.s)).sort((a, b) => b.y - a.y);
-    const rows = anchors.map(a => ({y: a.y, parts: {}}));
+    const rows = anchors.map(a => ({y: a.y, page: pageNo, parts: {}}));
     tokens.forEach(t => {
       let r = null;
       for (const x of rows){ if (x.y >= t.y - t.h * 0.6) r = x; else break; }
       if (!r && !rows.length) r = lastRow;
       if (r) (r.parts[t.k] = r.parts[t.k] || []).push(t);
     });
-    rows.forEach(r => allRows.push(r));
+    rows.forEach(r => { r.page = pageNo; allRows.push(r); });
     if (rows.length) lastRow = rows[rows.length - 1];
   });
   if (!cols) return null;
@@ -5976,13 +5979,145 @@ function scoreParse(p){
   return rows.length - chk.bad * 3;
 }
 // Try every reader and keep the one whose rows agree best with the running balance
+/* ================================================================== */
+/* Repairing a statement: read again only the pages whose lines do    */
+/* not fit the running balance, and merge without making duplicates.  */
+/* ================================================================== */
+function breakRows(){ const b = B(); return b ? b.rows.filter(r => r.balOk === false) : []; }
+function pagesToFix(rows){
+  const b = B(), out = new Set();
+  rows.forEach(r => {
+    const i = b.rows.indexOf(r);
+    [r, b.rows[i - 1], b.rows[i + 1]].forEach(x => { if (x && x.page) out.add(x.page); });
+  });
+  return Array.from(out).sort((a, c) => a - c);
+}
+async function readPagesAgain(file, pages, force, progress){
+  if (force === "claude") return (await claudeStatement(file, progress, pages)).rows;
+  const all = await statementImages(file);
+  const picked = pages.map(n => ({canvas: all[n - 1], page: n})).filter(x => x.canvas);
+  const out = [];
+  for (let i = 0; i < picked.length; i++){
+    if (progress) progress((force === "google" ? "Google OCR: page " : "Reading page ") + picked[i].page);
+    const src = cropCanvas(picked[i].canvas, 0, 0, picked[i].canvas.width, picked[i].canvas.height);
+    if (force !== "google") enhanceCanvas(src);
+    const words = (force === "google" ? await googleWords(src) : await ocrWords(src))
+      .filter(w => (w.conf == null || w.conf > 20) && String(w.s).trim())
+      .map(w => ({s: fixOcrNumber(String(w.s).trim()), x: w.x, y: src.height - w.y - w.h, w: w.w, h: w.h}));
+    out.push({items: words, page: picked[i].page});
+  }
+  const byHead = parseByHeadings(out), byLine = parseByLines(out.map(p => ({items: joinOcrWords(p.items), page: p.page})));
+  const pick = [byHead, byLine].filter(Boolean).sort((a, c) => (c.rows || []).length - (a.rows || []).length)[0];
+  return (pick && pick.rows) || [];
+}
+// Put back only what belongs in each gap: the re-read lines between the last balance that was right
+// and the next one, in the order they are printed. Nothing else is touched.
+function spliceMissing(rows, found, accId, keys, opening){
+  const fpOf = r => [accId, r.date, r.debit, r.credit, r.balance === null ? "" : r.balance, normName(r.narr).slice(0, 30)].join("|");
+  const near = (a, b2) => a != null && b2 != null && Math.abs(num(a) - num(b2)) <= 0.011;
+  const have = new Set(rows.map(r => r.fp || fpOf(r)));
+  const out = rows.slice();
+  const added = [];
+  for (let i = out.length - 1; i >= 0; i--){
+    if (out[i].balOk !== false) continue;
+    const prevBal = i > 0 ? out[i - 1].balance : (opening == null ? null : opening);
+    const curBal = out[i].balance;
+    if (prevBal == null || curBal == null) continue;
+    const a = found.findIndex(c => near(c.balance, prevBal));
+    const bIdx = found.findIndex((c, k) => k > a && near(c.balance, curBal));
+    if (a < 0 || bIdx <= a) continue;
+    const middle = found.slice(a + 1, bIdx).filter(c => {
+      if (!c.date || (!c.debit && !c.credit)) return false;
+      const fp = fpOf(c);
+      if (have.has(fp) || (keys && keys[fp])) return false;
+      have.add(fp); c.fp = fp; return true;
+    });
+    if (!middle.length) continue;
+    out.splice(i, 0, ...middle.map(c => Object.assign({}, c)));
+    added.push(...middle);
+  }
+  return {rows: out, added};
+}
+// merge: keep every line that is already right, add only what is missing, never the same line twice
+function mergeStatementRows(existing, found, accId, keys){
+  const fpOf = r => [accId, r.date, r.debit, r.credit, r.balance === null ? "" : r.balance, normName(r.narr).slice(0, 30)].join("|");
+  const have = new Set(existing.map(r => r.fp || fpOf(r)));
+  const added = [];
+  found.forEach(r => {
+    if (!r.date || (!r.debit && !r.credit)) return;
+    const fp = fpOf(r);
+    if (have.has(fp)) return;                                   // already in this statement
+    if (keys && keys[fp]) return;                               // already in another statement of this account
+    have.add(fp);
+    added.push(Object.assign({}, r, {fp}));
+  });
+  const all = existing.concat(added);
+  all.sort((a, c) => String(a.date).localeCompare(String(c.date)) || (a.balance == null || c.balance == null ? 0 : 0));
+  return {rows: all, added};
+}
+async function fixBreaks(force){
+  const b = B(), st = curStmt();
+  if (!b || !st) return;
+  const bad = breakRows();
+  if (!bad.length){ toast("Every line already fits the running balance."); return; }
+  const file = S.files["st:" + st.id];
+  if (!file){ b.fixWant = force || "claude"; toast("Choose " + st.fileName + " again so those pages can be read."); const el = document.getElementById("bankIn"); if (el) el.click(); return; }
+  const pages = pagesToFix(bad);
+  if (!pages.length){ toast("These lines do not say which page they came from. Upload the statement again to repair it."); return; }
+  const was = bad.length;
+  b.busy = "Reading " + pages.length + " page" + (pages.length === 1 ? "" : "s") + " again (" + (force === "claude" ? "Claude" : force === "google" ? "Google OCR" : "free") + ")\u2026"; render();
+  try {
+    const found = await readPagesAgain(file, pages, force, m => { b.busy = m + "\u2026"; render(); });
+    const keys = (await BankDB.get("keys:" + b.cid)) || {};
+    const before = b.rows.slice();
+    const merged = spliceMissing(before, found, st.acctId, keys, st.opening);
+    if (!merged.added.length){ b.busy = ""; toast("Nothing new was found on " + (pages.length === 1 ? "that page" : "those pages") + ". The missing entries may not be printed there."); render(); return; }
+    merged.added.forEach((r, i) => Object.assign(r, {id: st.id + "-fix" + Date.now() + "-" + i, dec: decodeNarr(r.narr, CO(b.cid).name), state: "attention", ledger: "", userSet: false}));
+    const chkNew = checkBalances(merged.rows.map(r => r), {opening: st.opening, closing: st.closing});
+    if (chkNew.bad >= was){
+      b.busy = ""; render();
+      toast("Those pages were read again but the balances did not improve (" + chkNew.bad + " still do not fit). Nothing was changed.");
+      return;
+    }
+    b.rows = merged.rows;
+    merged.added.forEach(r => { keys[r.fp] = st.id; });
+    checkBalances(b.rows, {opening: st.opening, closing: st.closing});
+    st.n = b.rows.length; st.badRows = chkNew.bad; st.fixedRows = chkNew.fixed;
+    st.counts = {attention: b.rows.filter(r => r.state === "attention").length};
+    await BankDB.set("stmt:" + b.cid + ":" + st.id, b.rows);
+    await BankDB.set("keys:" + b.cid, keys);
+    saveBank({rows: true, stmts: true});
+    b.busy = ""; render();
+    toast(merged.added.length + " line" + (merged.added.length === 1 ? "" : "s") + " added from " + pages.length + " page" + (pages.length === 1 ? "" : "s") + ". " +
+      (chkNew.bad ? chkNew.bad + " line" + (chkNew.bad === 1 ? "" : "s") + " still do not fit." : "Every line now fits the running balance."));
+  } catch (e){
+    b.busy = ""; render();
+    toast("Could not read those pages: " + errCopy(e && e.code));
+  }
+}
+function fixBanner(){
+  const b = B(), st = curStmt();
+  if (!b || !st) return "";
+  const bad = breakRows();
+  if (!bad.length) return "";
+  const pages = pagesToFix(bad);
+  return '<div class="bk-alert bad"><b>' + bad.length + " line" + (bad.length === 1 ? " does" : "s do") + " not fit the running balance.</b> " +
+    (pages.length ? "Something printed on page" + (pages.length === 1 ? " " : "s ") + pages.join(", ") + " was missed or misread." : "") +
+    '<div class="row" style="gap:8px;margin-top:8px"><span class="note">Read those pages again:</span>' +
+    '<button class="btn small" data-act="fixFree">Free</button>' +
+    '<button class="btn small" data-act="fixGoogle"' + (googleReady() ? "" : " disabled") + '>Google OCR</button>' +
+    '<button class="btn small primary" data-act="fixClaude"' + (claudeReady() ? "" : " disabled") + ">Claude</button></div></div>";
+}
+
 // Claude reads the pages as images and lists the transactions. Used when asked, or when nothing else could read the file.
-async function claudeStatement(file, progress){
+async function claudeStatement(file, progress, onlyPages){
   if (!claudeReady()) throw {code: "no_engine"};
-  const canvases = await statementImages(file);
+  const all = await statementImages(file);
+  const canvases = onlyPages && onlyPages.length ? onlyPages.map(n => all[n - 1]).filter(Boolean) : all;
   const rows = [], metaLines = [];
   for (let i = 0; i < canvases.length; i++){
-    if (progress) progress("Claude is reading page " + (i + 1) + " of " + canvases.length + "\u2026");
+    const pageNo = onlyPages && onlyPages.length ? onlyPages[i] : i + 1;
+    if (progress) progress("Claude is reading page " + pageNo + "\u2026");
     if (!(await charge("bills", 1, file.name, "Statement page read by Claude"))) throw {code: "no_credit"};
     const img = await imgBlob(canvases[i], "page");
     const prompt = "This is page " + (i + 1) + " of a bank statement. List every transaction row in the table, in the order printed.\n" +
@@ -5998,7 +6133,7 @@ async function claudeStatement(file, progress){
       if (!d) return;
       const deb = num(r.withdrawal), cre = num(r.deposit);
       if (!deb && !cre) return;
-      rows.push({date: d, narr: String(r.narration || "").replace(/\s+/g, " ").trim(), debit: deb, credit: cre, balance: r.balance == null ? null : num(r.balance)});
+      rows.push({date: d, page: pageNo, narr: String(r.narration || "").replace(/\s+/g, " ").trim(), debit: deb, credit: cre, balance: r.balance == null ? null : num(r.balance)});
     });
   }
   return {rows, meta: statementMeta(metaLines)};
@@ -7037,6 +7172,7 @@ async function uploadStatements(files, force){
       suggestAll(rows);
       matchTallyBook(acc, rows);
       st.counts = countStates(rows);
+      S.files["st:" + sid] = file;                 // kept in this session, so pages can be read again
       await BankDB.set("stmt:" + b.cid + ":" + sid, rows);
       saveBank({stmts: true, keys: true});
       b.filter = "review";
@@ -7069,6 +7205,7 @@ async function fileStatementFor(owner, file, hash, parsed, chk, meta, last4){
     opening: meta.opening, closing: meta.closing, n: rows.length, dupRows, badRows: chk.bad, fixedRows: chk.fixed, summaryOk: chk.summaryOk,
     totDr: chk.totDr, totCr: chk.totCr, source: parsed.source, method: parsed.method || "", uploadedAt: new Date().toISOString(), counts: {attention: rows.length}};
   stmts.push(st);
+  S.files["st:" + sid] = file;                     // kept in this browser session, so pages can be read again
   await BankDB.set("stmt:" + cid + ":" + sid, rows);
   await Promise.all([BankDB.set("stmts:" + cid, stmts), BankDB.set("keys:" + cid, keys)]);
   toast(file.name + " is for " + owner.name + " (account \u00b7\u00b7" + last4 + "), so it was filed there.");
@@ -7609,6 +7746,7 @@ function viewBank(){
   if (b.moved) h += '<div class="bk-alert"><b>' + esc(b.moved.file) + "</b> is a statement of " + esc(b.moved.name) + " (account \u00b7\u00b7" + esc(b.moved.last4) + "), so it was filed there. " +
     '<button class="linkbtn" data-act="bankOpenMoved">Open ' + esc(b.moved.name) + '</button> <button class="linkbtn" data-act="bankDismissMoved">Dismiss</button></div>';
   if (b.postReport) h += postReportHtml(b.postReport);
+  h += fixBanner();
   if (b.lastFail) h += '<div class="bk-alert bad"><b>' + esc(b.lastFail.file) + " was not read.</b> " + esc(b.lastFail.msg) +
     '<div class="row" style="gap:8px;margin-top:8px"><span class="note">Read it again:</span>' +
     '<button class="btn small" data-act="bankRetryFree">Try again</button>' +
@@ -7693,6 +7831,8 @@ function colHead(table, key, label, cls){
     '" data-colf="' + key + '" data-colt="' + table + '" aria-label="Filter ' + esc(label) + '" title="Filter ' + esc(label) + '">' + FUNNEL + "</button></span></th>";
 }
 function colActive(t, k){
+  if (t === "sales"){ const f = (SL() || {}).f || {};
+    return k === "date" ? !!(f.from || f.to) : k === "no" ? !!f.no : k === "cust" ? !!(f.cust || (f.custs && f.custs.length)) : k === "val" ? !!(f.min || f.max) : k === "led" ? !!(f.leds && f.leds.length) : false; }
   if (t === "bank"){ const b = B() || {}, f = b.f || {};
     return k === "date" ? !!(b.from || b.to) : k === "narr" ? !!(f.narr || (f.modes && f.modes.length)) : k === "wd" ? !!(f.wmin || f.wmax) : k === "dep" ? !!(f.dmin || f.dmax) : k === "led" ? !!(f.led || f.ledText || (f.leds && f.leds.length)) : false; }
   const f = S.revF || {};
@@ -7702,6 +7842,7 @@ function colActive(t, k){
 function colValues(t, k){
   const m = new Map();
   const add = v => { if (v) m.set(v, (m.get(v) || 0) + 1); };
+  if (t === "sales"){ const list = (SL() || {list: []}).list; if (k === "cust") list.forEach(v => add(v.x.customerName)); if (k === "led") list.forEach(v => add(v.customerLedger)); return Array.from(m.entries()).sort((a, b) => b[1] - a[1]); }
   if (t === "bank"){ const rows = B().rows; if (k === "narr") rows.forEach(r => add(r.dec && r.dec.mode)); if (k === "led") rows.forEach(r => add(r.ledger)); }
   else { const rows = draftRows(); if (k === "sup") rows.forEach(r => add(r.e.x.vendorName)); if (k === "nature") rows.forEach(r => add(r.e.natureId)); }
   return Array.from(m.entries()).sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
@@ -7709,7 +7850,8 @@ function colValues(t, k){
 const MODE_NAMES = {UPI: "UPI", NEFT: "NEFT", IMPS: "IMPS", RTGS: "RTGS", CHQ: "Cheque", CASH: "Cash deposit", ATM: "Cash withdrawal", NACH: "NACH / ECS", CARD: "Card", CHARGES: "Bank charges", INTEREST: "Interest", TRANSFER: "Transfer", OTHER: "Other"};
 function colPopHtml(){
   const p = S.colPop; if (!p) return "";
-  const bank = p.t === "bank", b = bank ? B() : null, f = bank ? (b.f || {}) : (S.revF || {});
+  const bank = p.t === "bank", sales = p.t === "sales", b = bank ? B() : null;
+  const f = bank ? (b.f || {}) : sales ? ((SL() || {}).f || {}) : (S.revF || {});
   const dateFrom = bank ? b.from : f.from, dateTo = bank ? b.to : f.to;
   const list = (values, chosen, name, labeler) => '<input type="search" class="cp-search" data-cpsearch placeholder="Search\u2026" aria-label="Search the list">' +
     '<div class="cp-list">' + values.map(([v, n]) => '<label class="cp-item"><input type="checkbox" data-pf="' + name + '" value="' + esc(v) + '"' + ((chosen || []).includes(v) ? " checked" : "") + "><span>" + esc(labeler ? labeler(v) : v) + '</span><small>' + n + "</small></label>").join("") +
@@ -7731,12 +7873,21 @@ function colPopHtml(){
   } else if (bank && p.k === "led"){
     title = "Ledger";
     body = radio("led", f.led, [["", "Any ledger"], ["none", "No ledger yet"], ["set", "Ledger chosen"]]) + '<p class="cp-sub">Or only these ledgers:</p>' + list(colValues("bank", "led"), f.leds, "leds");
-  } else if (!bank && p.k === "sup"){
+  } else if (sales && p.k === "no"){
+    title = "Invoice"; body = '<input type="text" data-pf="no" value="' + esc(f.no || "") + '" placeholder="Invoice number has\u2026" class="cp-full" autofocus>';
+  } else if (sales && p.k === "cust"){
+    title = "Customer";
+    body = '<input type="text" data-pf="cust" value="' + esc(f.cust || "") + '" placeholder="Name, GSTIN or ledger has\u2026" class="cp-full" autofocus><p class="cp-sub">Or only these customers:</p>' + list(colValues("sales", "cust"), f.custs, "custs");
+  } else if (sales && p.k === "val"){
+    title = "Total"; body = range("min", "max", f.min, f.max);
+  } else if (sales && p.k === "led"){
+    title = "Customer ledger"; body = list(colValues("sales", "led"), f.leds, "leds");
+  } else if (!bank && !sales && p.k === "sup"){
     title = "Supplier";
     body = '<input type="text" data-pf="sup" value="' + esc(f.sup || "") + '" placeholder="Name, GSTIN or ledger has\u2026" class="cp-full" autofocus><p class="cp-sub">Or only these suppliers:</p>' + list(colValues("rev", "sup"), f.sups, "sups");
-  } else if (!bank && p.k === "no"){
+  } else if (!bank && !sales && p.k === "no"){
     title = "Bill no."; body = '<input type="text" data-pf="no" value="' + esc(f.no || "") + '" placeholder="Bill number has\u2026" class="cp-full" autofocus>';
-  } else if (!bank && p.k === "val"){
+  } else if (!bank && !sales && p.k === "val"){
     title = "Value"; body = range("min", "max", f.min, f.max);
   } else if (!bank && p.k === "nature"){
     const lab = Object.fromEntries(rules().map(r => [r.id, r.label]));
@@ -7760,12 +7911,17 @@ function colPopApply(clearOnly){
     else vals[k] = el.value;
   });
   const keys = {bank: {date: ["from", "to"], narr: ["narr", "narrNot", "modes"], wd: ["wmin", "wmax"], dep: ["dmin", "dmax"], led: ["led", "leds", "ledText"]},
+                sales: {date: ["from", "to"], no: ["no"], cust: ["cust", "custs"], val: ["min", "max"], led: ["leds"]},
                 rev: {date: ["from", "to"], sup: ["sup", "sups"], no: ["no"], val: ["min", "max"], nature: ["natures"], tds: ["tds"], look: ["look"]}}[p.t][p.k];
   if (p.t === "bank"){
     const b = B(); b.f = b.f || {};
     keys.forEach(k => { const v = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); if (k === "from" || k === "to") b[k] = v; else b.f[k] = v; });
     if (b.from && b.to && b.from > b.to){ const x = b.from; b.from = b.to; b.to = x; }
     b.sel.clear();
+  } else if (p.t === "sales"){
+    const sl = SL(); sl.f = sl.f || {};
+    keys.forEach(k => { const v = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); if (k === "from" || k === "to") sl.f[k] = v; else sl.f[k] = v; });
+    sl.sel.clear();
   } else {
     S.revF = S.revF || {};
     keys.forEach(k => { S.revF[k] = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); });
@@ -7787,6 +7943,13 @@ function colChips(t){
     if (f.dmin || f.dmax) chips.push(["dep", "Deposit " + rng(f.dmin, f.dmax)]);
     if (f.led) chips.push(["led", f.led === "none" ? "No ledger yet" : "Ledger chosen"]);
     if (f.leds && f.leds.length) chips.push(["led", "Ledger: " + f.leds.slice(0, 2).join(", ") + (f.leds.length > 2 ? " +" + (f.leds.length - 2) : "")]);
+  } else if (t === "sales"){ const f = (SL() || {}).f || {};
+    if (f.from || f.to) chips.push(["date", "Date " + (f.from && f.to ? d(f.from) + " \u2013 " + d(f.to) : f.from ? "from " + d(f.from) : "to " + d(f.to))]);
+    if (f.no) chips.push(["no", "Invoice has \u201c" + f.no + "\u201d"]);
+    if (f.cust) chips.push(["cust", "Customer has \u201c" + f.cust + "\u201d"]);
+    if (f.custs && f.custs.length) chips.push(["cust", "Customer: " + f.custs.slice(0, 2).join(", ") + (f.custs.length > 2 ? " +" + (f.custs.length - 2) : "")]);
+    if (f.min || f.max) chips.push(["val", "Total " + rng(f.min, f.max)]);
+    if (f.leds && f.leds.length) chips.push(["led", "Ledger: " + f.leds.slice(0, 2).join(", ")]);
   } else { const f = S.revF || {}, lab = Object.fromEntries(rules().map(r => [r.id, r.label]));
     if (f.from || f.to) chips.push(["date", "Date " + (f.from && f.to ? d(f.from) + " \u2013 " + d(f.to) : f.from ? "from " + d(f.from) : "to " + d(f.to))]);
     if (f.sup) chips.push(["sup", "Supplier has \u201c" + f.sup + "\u201d"]);
@@ -8438,6 +8601,9 @@ function bankClick(t){
       else postBankToTally();
       return true;
     }
+    case "fixFree": fixBreaks(null); return true;
+    case "fixGoogle": fixBreaks("google"); return true;
+    case "fixClaude": fixBreaks("claude"); return true;
     case "bankRetryFree": case "bankRetryGoogle": case "bankRetryClaude": {
       const b = B(), f = b && b.lastFile;
       if (!f){ toast("Upload the statement again: the file is not held on this computer."); return true; }
@@ -8503,7 +8669,11 @@ function bulkLedgerFrom(inp){
 }
 function bankChange(t){
   const b = B(); if (!b) return false;
-  if (t.id === "bankIn"){ const files = Array.from(t.files || []).filter(isBankFile); t.value = ""; const was = S.step; Promise.resolve(uploadStatements(files)).then(() => { if (was === "collect" && S.step === "collect") goStep("review", "bank"); }); return true; }
+  if (t.id === "bankIn"){
+    const files = Array.from(t.files || []).filter(isBankFile); t.value = "";
+    const bnk = B();
+    if (bnk && bnk.fixWant && files.length && curStmt()){ const how = bnk.fixWant; bnk.fixWant = null; S.files["st:" + curStmt().id] = files[0]; fixBreaks(how === "free" ? null : how); return true; }
+    const was = S.step; Promise.resolve(uploadStatements(files)).then(() => { if (was === "collect" && S.step === "collect") goStep("review", "bank"); }); return true; }
   if (t.id === "ledIn"){ const f = t.files && t.files[0]; t.value = ""; if (f) importLedgerList(f); return true; }
   if (t.id === "bookIn"){ const f = t.files && t.files[0]; t.value = ""; if (f) importTallyBook(f); return true; }
   if (t.dataset.stmtsel){ openStatement(t.value); return true; }
@@ -9907,9 +10077,22 @@ function printInvoiceHtml(html, number){
 const SALES_TABS = [["review", "To review"], ["ready", "Ready"], ["done", "Done"]];
 function salesTabStates(t){ return t === "ready" ? ["ready"] : t === "done" ? ["posted", "intally", "ignored"] : ["review"]; }
 function salesCounts(){ const c = {review: 0, ready: 0, done: 0}; SL().list.forEach(v => { if (v.status === "review") c.review++; else if (v.status === "ready") c.ready++; else c.done++; }); return c; }
+function salesColPass(v){
+  const f = (SL() || {}).f || {}, x = v.x || {};
+  if (f.from && (x.date || "") < f.from) return false;
+  if (f.to && (x.date || "") > f.to) return false;
+  if (f.no && !String(x.number || "").toLowerCase().includes(f.no.toLowerCase())) return false;
+  if (f.cust && !String((x.customerName || "") + " " + (x.customerGstin || "") + " " + (v.customerLedger || "")).toLowerCase().includes(f.cust.toLowerCase())) return false;
+  if (f.custs && f.custs.length && !f.custs.includes(x.customerName)) return false;
+  if (f.min && num(x.total) < num(f.min)) return false;
+  if (f.max && num(x.total) > num(f.max)) return false;
+  if (f.leds && f.leds.length && !f.leds.includes(v.customerLedger)) return false;
+  return true;
+}
+function salesColOn(){ const f = (SL() || {}).f || {}; return Object.keys(f).some(k => Array.isArray(f[k]) ? f[k].length : f[k]); }
 function salesVisible(){
   const s = SL(), states = salesTabStates(s.filter), q = s.q.trim().toLowerCase();
-  return s.list.filter(v => (states.includes(v.status) || s.sticky.has(v.id)) && (!q || [v.x.number, v.x.customerName, v.x.customerGstin, v.customerLedger, v.x.total].join(" ").toLowerCase().includes(q)))
+  return s.list.filter(v => salesColPass(v) && (states.includes(v.status) || s.sticky.has(v.id)) && (!q || [v.x.number, v.x.customerName, v.x.customerGstin, v.customerLedger, v.x.total].join(" ").toLowerCase().includes(q)))
     .sort((a, b) => String(b.x.date).localeCompare(String(a.x.date)) || String(b.x.number).localeCompare(String(a.x.number)));
 }
 function viewSales(){
@@ -9942,8 +10125,9 @@ function viewSales(){
     '<input type="search" class="bk-search" data-salesq data-fk="salesq" data-keeptyped autocomplete="off" placeholder="Search invoice, customer, GSTIN" value="' + esc(s.q) + '"></div>';
   const list = salesVisible();
   const nSel = list.filter(v => s.sel.has(v.id)).length;
+  h += colChipBar("sales", list.length, s.list.length + " invoices");
   h += '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-sselall aria-label="Select all"' + (nSel && nSel === list.length ? " checked" : "") + "></th>" +
-    '<th class="dt">Date</th><th>Invoice</th><th>Customer</th><th class="n">Taxable</th><th class="n">GST</th><th class="n">Total</th><th class="lg">Customer ledger</th><th class="ac"></th></tr></thead><tbody>' +
+    colHead("sales", "date", "Date", "dt") + colHead("sales", "no", "Invoice") + colHead("sales", "cust", "Customer") + '<th class="n">Taxable</th><th class="n">GST</th>' + colHead("sales", "val", "Total", "n") + colHead("sales", "led", "Customer ledger", "lg") + '<th class="ac"></th></tr></thead><tbody>' +
     list.map(salesRowHtml).join("") + "</tbody></table>" + (list.length ? "" : '<div class="bk-none">' + ({review: "Nothing to review.", ready: "No invoices are ready yet.", done: "Nothing posted or ignored yet."}[s.filter]) + "</div>") + "</div>";
   h += "</div>";
   if (s.openId && inv(s.openId)) h += salesDetailHtml(inv(s.openId));
@@ -11435,7 +11619,7 @@ document.addEventListener("click", ev => {
   if (t.closest && t.closest("[data-cpclear]")){ colPopApply(true); return; }
   if (t.dataset.cpquick){ const [a2, b2] = quickRange(t.dataset.cpquick), pop = document.getElementById("colpop"); if (pop){ pop.querySelector('[data-pf="from"]').value = a2; pop.querySelector('[data-pf="to"]').value = b2; } colPopApply(false); return; }
   if (t.dataset.chipx){ S.colPop = {t: t.dataset.colt, k: t.dataset.chipx}; colPopApply(true); return; }
-  if (t.dataset.chipall){ if (t.dataset.chipall === "bank"){ const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); } else { S.revF = {}; S.revSel = new Set(); } S.colPop = null; render(); return; }
+  if (t.dataset.chipall){ if (t.dataset.chipall === "bank"){ const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); } else if (t.dataset.chipall === "sales"){ const sl = SL(); if (sl){ sl.f = {}; sl.sel.clear(); } } else { S.revF = {}; S.revSel = new Set(); } S.colPop = null; render(); return; }
   if (t.dataset.billback){ const e = D().entries[t.dataset.billback]; if (e){ const keep = S.tab; undoApproval(e); S.tab = keep; render(); } return; }
   if (t.dataset.billdel){
     const e = D().entries[t.dataset.billdel];
