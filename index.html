@@ -352,6 +352,21 @@ header.top .toprow{display:block}
 .bk-dates input[type="date"],.bk-dates select{height:32px;border:1px solid var(--rule);border-radius:7px;padding:0 8px;font:inherit;font-size:13.5px;background:var(--sheet);color:var(--ink)}
 .bk-dates-s{color:var(--ink)}
 .bk-cols{margin-top:0}
+.bk-table thead tr.bk-frow th{background:var(--paper);padding:6px 6px 8px;vertical-align:top;font-weight:400;text-transform:none;letter-spacing:0;border-bottom:1px solid var(--rule)}
+.bk-frow input,.bk-frow select{display:block;width:100%;box-sizing:border-box;height:28px;margin:0 0 4px;border:1px solid var(--rule);border-radius:6px;padding:0 6px;font:inherit;font-size:12.5px;background:var(--sheet);color:var(--ink)}
+.bk-frow th.n input{text-align:right}
+.bk-frow input[type="date"]{width:112px;min-width:0;padding:0 2px;font-size:11.5px}
+.bk-frow th.n input{width:74px;min-width:0}
+.bk-frow select{max-width:150px}
+.bk-frow th.dt{width:116px}
+.revtbl td.pt{max-width:230px;white-space:normal;word-break:break-word}
+.revtbl td:nth-child(9){max-width:150px;white-space:normal}
+.revtbl td:nth-child(9) .src{white-space:normal}
+.revtbl td:nth-child(4){max-width:110px;white-space:normal;word-break:break-all}
+.revtbl select{max-width:150px}
+.bk-frow .bk-fpair{display:flex;gap:4px}.bk-frow .bk-fpair select{width:78px;flex-shrink:0}
+.bk-frow input[type="text"]:not(:placeholder-shown),.bk-frow input[type="number"]:not(:placeholder-shown),.bk-frow .on{border-color:var(--ledger);background:var(--ledger-soft)}
+.revtbl td.pt .pn{white-space:normal;text-align:left;display:block}
 .bk-cols input[type="text"],.bk-cols input[type="number"]{height:32px;border:1px solid var(--rule);border-radius:7px;padding:0 8px;font:inherit;font-size:13.5px;background:var(--sheet);color:var(--ink)}
 .revfilter{display:flex;align-items:center;gap:12px;margin:0 0 10px}
 .revfilter input{flex:1;max-width:520px;height:36px;border:1px solid var(--rule);border-radius:8px;padding:0 12px;font:inherit;font-size:14px;background:var(--sheet)}
@@ -638,7 +653,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 85 (bank PDFs whose dates wrap onto two lines, such as ICICI)";
+const APP_VERSION = "22 Sep 2026 · build 86 (filters under each column heading, in Bank and Purchase)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -4645,11 +4660,39 @@ function drawerHtml(){
     '<div class="drawer-head"><div><b>' + esc(e.x.vendorName || e.fileName || "Bill") + '</b><span class="note">' + esc(e.x.invoiceNo || "") + (i >= 0 ? " \u00b7 " + (i + 1) + " of " + rows.length : "") + "</span></div>" +
     '<button class="btn small" data-act="drawerClose">Close</button></div>' + viewDetail(e) + "</aside>";
 }
+function revColOn(){ const f = S.revF || {}; return Object.keys(f).some(k => f[k]); }
+function revColPass(r){
+  const f = S.revF || {}, x = r.e.x, c = r.c;
+  if (f.from && (x.invoiceDate || "") < f.from) return false;
+  if (f.to && (x.invoiceDate || "") > f.to) return false;
+  if (f.sup && !String((x.vendorName || "") + " " + (x.vendorGstin || "") + " " + (r.e.expenseLedger || "")).toLowerCase().includes(f.sup.toLowerCase())) return false;
+  if (f.no && !String(x.invoiceNo || "").toLowerCase().includes(f.no.toLowerCase())) return false;
+  if (f.min && num(x.total) < num(f.min)) return false;
+  if (f.max && num(x.total) > num(f.max)) return false;
+  if (f.nature && r.e.natureId !== f.nature) return false;
+  if (f.tds === "yes" && !(c.tds > 0)) return false;
+  if (f.tds === "no" && c.tds > 0) return false;
+  if (f.look === "yes" && !((c.missing || []).length || c.flags.some(g => g.lvl === "hi") || r.e.confirmType)) return false;
+  if (f.look === "no" && ((c.missing || []).length || c.flags.some(g => g.lvl === "hi") || r.e.confirmType)) return false;
+  return true;
+}
 function revFiltered(){
-  const all = draftRows(), q = String(S.revQuery || "").trim().toLowerCase();
+  const all = draftRows().filter(revColPass), q = String(S.revQuery || "").trim().toLowerCase();
   if (!q) return all;
   return all.filter(r => [r.e.x.vendorName, r.e.x.invoiceNo, r.e.x.vendorGstin, r.e.x.vendorPan, r.e.expenseLedger, r.e.partyLedger, r.c.rule && r.c.rule.label,
     String(r.e.x.total), INR.format(num(r.e.x.total)), r.e.noteKind ? r.e.noteKind + " note" : "", r.e.postError || ""].join(" ").toLowerCase().includes(q));
+}
+function revFilterRow(){
+  const f = S.revF || {};
+  const txt = (k, ph) => '<input type="text" data-rf="' + k + '" data-fk="rf' + k + '" data-keeptyped autocomplete="off" placeholder="' + ph + '" value="' + esc(f[k] || "") + '" aria-label="' + ph + '">';
+  return '<tr class="bk-frow"><th class="ck"></th>' +
+    '<th class="dt"><input type="date"' + (f.from ? ' class="on"' : '') + ' data-rf="from" data-fk="rffrom" value="' + esc(f.from || "") + '" aria-label="From date"><input type="date"' + (f.to ? ' class="on"' : '') + ' data-rf="to" data-fk="rfto" value="' + esc(f.to || "") + '" aria-label="To date"></th>' +
+    "<th>" + txt("sup", "supplier, GSTIN or ledger") + "</th><th>" + txt("no", "bill no.") + "</th>" +
+    '<th class="n"><input type="number" data-rf="min" data-fk="rfmin" placeholder="from" value="' + esc(f.min || "") + '" aria-label="Value from"><input type="number" data-rf="max" data-fk="rfmax" placeholder="to" value="' + esc(f.max || "") + '" aria-label="Value to"></th>' +
+    '<th><select' + (f.nature ? ' class="on"' : '') + ' data-rf="nature" aria-label="Payment type"><option value="">Any type</option>' + rules().map(r => '<option value="' + r.id + '"' + (f.nature === r.id ? " selected" : "") + ">" + esc(r.label) + "</option>").join("") + "</select></th>" +
+    '<th class="ck" colspan="2"><select' + (f.tds ? ' class="on"' : '') + ' data-rf="tds" aria-label="TDS"><option value="">Any</option><option value="yes"' + (f.tds === "yes" ? " selected" : "") + '>TDS booked</option><option value="no"' + (f.tds === "no" ? " selected" : "") + ">No TDS</option></select></th>" +
+    '<th><select' + (f.look ? ' class="on"' : '') + ' data-rf="look" aria-label="Needs a look"><option value="">All bills</option><option value="yes"' + (f.look === "yes" ? " selected" : "") + '>Need a look</option><option value="no"' + (f.look === "no" ? " selected" : "") + ">Ready to approve</option></select></th>" +
+    '<th class="ac">' + (revColOn() ? '<button class="linkbtn" data-act="revFClear">Clear</button>' : "") + "</th></tr>";
 }
 function viewReviewTable(){
   const co = CO(), all = draftRows(), rows = revFiltered();
@@ -4660,8 +4703,8 @@ function viewReviewTable(){
     '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button></div></div>';
   if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
   h += '<div class="revfilter"><input type="search" id="revq" data-fk="revq" value="' + esc(S.revQuery || "") + '" placeholder="Filter by supplier, bill no., GSTIN, ledger, payment type or amount" aria-label="Filter the bills">' +
-    (S.revQuery ? '<span class="note">' + rows.length + " of " + all.length + " shown</span>" : "") + "</div>";
-  h += '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th><th class="dt">Date</th><th>Supplier</th><th>Bill no.</th><th class="n">Value</th><th>Payment type</th><th class="ck">TDS</th><th class="n">TDS</th><th>This year vs limit</th><th class="ac"></th></tr></thead><tbody>';
+    (S.revQuery || revColOn() ? '<span class="note">' + rows.length + " of " + all.length + ' shown</span><button class="linkbtn" data-act="revFClear">Clear all filters</button>' : "") + "</div>";
+  h += '<div class="bk-tablewrap"><table class="bk-table revtbl"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th><th class="dt">Date</th><th>Supplier</th><th>Bill no.</th><th class="n">Value</th><th>Payment type</th><th class="ck">TDS</th><th class="n">TDS</th><th>This year vs limit</th><th class="ac"></th></tr>' + revFilterRow() + "</thead><tbody>";
   h += rows.map(({e, c}) => {
     const fy = fyOf(e.x.invoiceDate), t = tallyYtdFor(c.party, fy, e);
     const m = c.meter;
@@ -7125,6 +7168,12 @@ function bankColFilter(r){
   if (f.narr){ const words = f.narr.toLowerCase().split(",").map(w => w.trim()).filter(Boolean); const hit = words.some(w => narr.includes(w)); if (f.narrNot ? hit : !hit) return false; }
   if (f.min !== "" && f.min != null && amt < num(f.min)) return false;
   if (f.max !== "" && f.max != null && amt > num(f.max)) return false;
+  if ((f.wmin || f.wmax) && !num(r.debit)) return false;
+  if (f.wmin && num(r.debit) < num(f.wmin)) return false;
+  if (f.wmax && num(r.debit) > num(f.wmax)) return false;
+  if ((f.dmin || f.dmax) && !num(r.credit)) return false;
+  if (f.dmin && num(r.credit) < num(f.dmin)) return false;
+  if (f.dmax && num(r.credit) > num(f.dmax)) return false;
   if (f.dir === "out" && !num(r.debit)) return false;
   if (f.dir === "in" && !num(r.credit)) return false;
   if (f.mode && (r.dec && r.dec.mode) !== f.mode) return false;
@@ -7133,7 +7182,7 @@ function bankColFilter(r){
   if (f.ledText && !String(r.ledger || "").toLowerCase().includes(f.ledText.toLowerCase())) return false;
   return true;
 }
-function bankColFilterOn(){ const f = B().f; return !!(f && (f.narr || f.min || f.max || f.dir || f.mode || f.led || f.ledText)); }
+function bankColFilterOn(){ const f = B().f; return !!(f && (f.narr || f.min || f.max || f.dir || f.mode || f.led || f.ledText || f.wmin || f.wmax || f.dmin || f.dmax)); }
 function inBankRange(r){ const b = B(); return (!b.from || r.date >= b.from) && (!b.to || r.date <= b.to) && bankColFilter(r); }
 function bankRangeOn(){ const b = B(); return !!(b && (b.from || b.to || bankColFilterOn())); }
 function bankRangeRows(){ const b = B(); return bankRangeOn() ? b.rows.filter(inBankRange) : b.rows; }
@@ -7425,23 +7474,10 @@ function viewBank(){
     '<button role="tab" aria-selected="' + (tab === "rules") + '" data-btab="rules">Rules <span class="cnt">' + allRules().length + "</span></button></div>" +
     (tab === "review" ? '<label class="bk-switch"><input type="checkbox" data-bgroup' + (b.grouped ? " checked" : "") + "> Group by party</label>" : "") +
     '<input type="search" class="bk-search" data-bankq data-fk="bankq" data-keeptyped autocomplete="off" placeholder="Search the description, party or amount" value="' + esc(b.q) + '"></div>';
-  {
-    const st = curStmt(), lo = (st && st.from) || (b.rows[0] || {}).date || "", hi = (st && st.to) || (b.rows[b.rows.length - 1] || {}).date || "";
-    const inR = bankRangeRows(), out = inR.reduce((a, r) => a + num(r.debit), 0), inn = inR.reduce((a, r) => a + num(r.credit), 0);
-    h += '<div class="bk-dates"><span class="bk-dates-l">Dates</span>' +
-      '<label>From <input type="date" data-bfrom value="' + esc(b.from || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '"></label>' +
-      '<label>To <input type="date" data-bto value="' + esc(b.to || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '"></label>' +
-      '<select data-bquick aria-label="Quick date range"><option value="">Quick pick\u2026</option><option value="all">Whole statement</option><option value="month">This month</option><option value="last">Last month</option><option value="quarter">This quarter</option><option value="fy">This financial year</option></select>' +
-      (bankRangeOn() ? '<span class="bk-dates-s"><b>' + inR.length + "</b> of " + b.rows.length + " lines \u00b7 out " + INR.format(r2(out)) + " \u00b7 in " + INR.format(r2(inn)) + '</span><button class="linkbtn" data-act="bankRangeClear">Clear all filters</button>' : "") + "</div>";
-    const f = b.f || {}, modes = [["", "Any mode"], ["UPI", "UPI"], ["NEFT", "NEFT"], ["IMPS", "IMPS"], ["RTGS", "RTGS"], ["CHQ", "Cheque"], ["CASH", "Cash deposit"], ["ATM", "Cash withdrawal"], ["NACH", "NACH / ECS"], ["CARD", "Card"], ["CHARGES", "Bank charges"], ["INTEREST", "Interest"], ["TRANSFER", "Transfer"], ["OTHER", "Other"]];
-    h += '<div class="bk-dates bk-cols"><span class="bk-dates-l">Filter</span>' +
-      '<label>Particulars <select data-bf="narrNot" aria-label="Contains or not"><option value=""' + (f.narrNot ? "" : " selected") + '>contain</option><option value="1"' + (f.narrNot ? " selected" : "") + ">do not contain</option></select>" +
-      '<input type="text" data-bf="narr" data-fk="bfnarr" data-keeptyped autocomplete="off" placeholder="swiggy, zomato" value="' + esc(f.narr || "") + '" style="width:170px"></label>' +
-      '<label>Amount <input type="number" data-bf="min" data-fk="bfmin" placeholder="from" value="' + esc(f.min || "") + '" style="width:90px"> \u2013 <input type="number" data-bf="max" data-fk="bfmax" placeholder="to" value="' + esc(f.max || "") + '" style="width:90px"></label>' +
-      '<select data-bf="dir" aria-label="Withdrawals or deposits"><option value="">Withdrawals and deposits</option><option value="out"' + (f.dir === "out" ? " selected" : "") + '>Withdrawals only</option><option value="in"' + (f.dir === "in" ? " selected" : "") + ">Deposits only</option></select>" +
-      '<select data-bf="mode" aria-label="Mode">' + modes.map(([v, l]) => '<option value="' + v + '"' + (f.mode === v ? " selected" : "") + ">" + l + "</option>").join("") + "</select>" +
-      '<select data-bf="led" aria-label="Ledger"><option value="">Any ledger</option><option value="none"' + (f.led === "none" ? " selected" : "") + '>No ledger yet</option><option value="set"' + (f.led === "set" ? " selected" : "") + ">Ledger chosen</option></select>" +
-      '<input type="text" data-bf="ledText" data-fk="bfled" data-keeptyped autocomplete="off" placeholder="ledger contains\u2026" value="' + esc(f.ledText || "") + '" style="width:150px" aria-label="Ledger contains">' + "</div>";
+  if (bankRangeOn()){
+    const inR = bankRangeRows(), out = inR.reduce((a2, r) => a2 + num(r.debit), 0), inn = inR.reduce((a2, r) => a2 + num(r.credit), 0);
+    h += '<div class="bk-dates"><span class="bk-dates-s">Filtered: <b>' + inR.length + "</b> of " + b.rows.length + " lines \u00b7 out " + INR.format(r2(out)) + " \u00b7 in " + INR.format(r2(inn)) +
+      '</span><button class="linkbtn" data-act="bankRangeClear">Clear all filters</button></div>';
   }
   h += dupFindHtml();
   if (b.offerRule){
@@ -7463,6 +7499,25 @@ function viewBank(){
   if (b.showSettings) h += bankSettingsHtml();
   return h;
 }
+// the row of filters under the column headings
+function bankFilterRow(){
+  const b = B(), f = b.f || {}, st = curStmt();
+  const lo = (st && st.from) || (b.rows[0] || {}).date || "", hi = (st && st.to) || (b.rows[b.rows.length - 1] || {}).date || "";
+  const modes = [["", "Any mode"], ["UPI", "UPI"], ["NEFT", "NEFT"], ["IMPS", "IMPS"], ["RTGS", "RTGS"], ["CHQ", "Cheque"], ["CASH", "Cash deposit"], ["ATM", "Cash withdrawal"], ["NACH", "NACH / ECS"], ["CARD", "Card"], ["CHARGES", "Bank charges"], ["INTEREST", "Interest"], ["TRANSFER", "Transfer"], ["OTHER", "Other"]];
+  const num2 = (key, ph) => '<input type="number" data-bf="' + key + '" data-fk="bf' + key + '" placeholder="' + ph + '" value="' + esc(f[key] || "") + '" aria-label="' + ph + '">';
+  return '<tr class="bk-frow"><th class="ck"></th>' +
+    '<th class="dt"><input type="date"' + (b.from ? ' class="on"' : '') + ' data-bfrom data-fk="bffrom" value="' + esc(b.from || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '" aria-label="From date">' +
+      '<input type="date"' + (b.to ? ' class="on"' : '') + ' data-bto data-fk="bfto" value="' + esc(b.to || "") + '" min="' + esc(lo) + '" max="' + esc(hi) + '" aria-label="To date">' +
+      '<select data-bquick aria-label="Quick date range"><option value="">Quick\u2026</option><option value="all">Whole statement</option><option value="month">This month</option><option value="last">Last month</option><option value="quarter">This quarter</option><option value="fy">This year</option></select></th>' +
+    '<th><div class="bk-fpair"><select' + (f.narrNot ? ' class="on"' : '') + ' data-bf="narrNot" aria-label="Contains or not"><option value=""' + (f.narrNot ? "" : " selected") + '>has</option><option value="1"' + (f.narrNot ? " selected" : "") + ">has not</option></select>" +
+      '<input type="text" data-bf="narr" data-fk="bfnarr" data-keeptyped autocomplete="off" placeholder="swiggy, zomato" value="' + esc(f.narr || "") + '" aria-label="Particulars"></div>' +
+      '<select' + (f.mode ? ' class="on"' : '') + ' data-bf="mode" aria-label="Mode">' + modes.map(([v, l]) => '<option value="' + v + '"' + (f.mode === v ? " selected" : "") + ">" + l + "</option>").join("") + "</select></th>" +
+    '<th class="n">' + num2("wmin", "from") + num2("wmax", "to") + "</th>" +
+    '<th class="n">' + num2("dmin", "from") + num2("dmax", "to") + "</th>" +
+    '<th class="lg"><select' + (f.led ? ' class="on"' : '') + ' data-bf="led" aria-label="Ledger"><option value="">Any ledger</option><option value="none"' + (f.led === "none" ? " selected" : "") + '>No ledger yet</option><option value="set"' + (f.led === "set" ? " selected" : "") + ">Ledger chosen</option></select>" +
+      '<input type="text" data-bf="ledText" data-fk="bfled" data-keeptyped autocomplete="off" placeholder="ledger has\u2026" value="' + esc(f.ledText || "") + '" aria-label="Ledger contains"></th>' +
+    '<th class="ac">' + (bankRangeOn() ? '<button class="linkbtn" data-act="bankRangeClear">Clear</button>' : "") + "</th></tr>";
+}
 function bankTable(tab){
   const b = B();
   let list = bankVisibleRows();
@@ -7471,7 +7526,7 @@ function bankTable(tab){
   list = list.slice(0, b.limit);
   const empty = {review: "Nothing to review. Every entry has a ledger.", ready: "No entries are ready yet.", done: "Nothing posted or ignored yet."}[tab] || "Nothing here.";
   let h = '<div class="bk-tablewrap"><table class="bk-table"><thead><tr><th class="ck"><input type="checkbox" data-bselall aria-label="Select all"' + (nSel && nSel === total ? " checked" : "") + "></th>" +
-    '<th class="dt">Date</th><th>Particulars</th><th class="n">Withdrawal</th><th class="n">Deposit</th><th class="lg">Ledger</th><th class="ac"></th></tr></thead><tbody>';
+    '<th class="dt">Date</th><th>Particulars</th><th class="n">Withdrawal</th><th class="n">Deposit</th><th class="lg">Ledger</th><th class="ac"></th></tr>' + bankFilterRow() + "</thead><tbody>";
   h += list.map(r => bankRowHtml(r, tab)).join("");
   h += "</tbody></table>";
   if (!total) h += '<div class="bk-none">' + empty + "</div>";
@@ -11280,6 +11335,7 @@ document.addEventListener("click", ev => {
     case "vchAuto": setAutoNumbering(); break;
     case "vchTallyDone": { const co = CO(); co.vchNumbering = "tally"; co.vchAutoAt = new Date().toISOString(); Store.saveCompany(co); toast("TDS Desk will leave voucher numbers to Tally."); render(); break; }
     case "vchUseBillNo": { const co = CO(); co.vchNumbering = ""; Store.saveCompany(co); toast("TDS Desk will send the supplier\u2019s bill number as the voucher number."); render(); break; }
+    case "revFClear": S.revF = {}; S.revQuery = ""; S.revSel = new Set(); render(); break;
     case "billBackAll": {
       const list = Object.values(D().entries).filter(e => e.status === "approved" && !e.exportedAt);
       list.forEach(e => unapply(e, S.coId)); list.forEach(e => Store.saveEntry(S.coId, e));
@@ -11442,6 +11498,7 @@ document.addEventListener("keydown", ev => {
 document.addEventListener("input", ev => {
   const t = ev.target;
   if (t && t.id === "revq"){ S.revQuery = t.value; softRender(); return; }
+  if (t && t.dataset && t.dataset.rf){ S.revF = S.revF || {}; S.revF[t.dataset.rf] = t.value; S.revSel = new Set(); softRender(); return; }
   if (t && t.dataset && ["email", "password", "firm", "name"].includes(t.dataset.cloud)){ S.cloudForm = Object.assign({}, S.cloudForm, {[t.dataset.cloud]: t.value}); }
   if (S.view === "company" && S.tab === "bank" && bankInput(t)) return;
   if (S.view === "company" && S.tab === "sales" && salesInput(t)) return;
