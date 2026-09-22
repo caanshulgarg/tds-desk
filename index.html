@@ -553,7 +553,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 68 (inbox shows what a file matched, and can read it anyway)";
+const APP_VERSION = "22 Sep 2026 · build 69 (GSTINs read from rougher OCR text)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -577,6 +577,18 @@ function fixGstin(raw){
     }
   }
   if (found.size === 1) return {value:[...found][0], status:"fixed", from:g};
+  if (!found.size && g.length === 15){
+    const two = new Set();
+    for (let i = 0; i < 15; i++){
+      const a = LOOKALIKE[g[i]]; if (!a) continue;
+      for (let k = i + 1; k < 15; k++){
+        const b = LOOKALIKE[g[k]]; if (!b) continue;
+        const c = g.slice(0, i) + a + g.slice(i + 1, k) + b + g.slice(k + 1);
+        if (gstinValid(c)) two.add(c);
+      }
+    }
+    if (two.size === 1) return {value:[...two][0], status:"fixed", from:g};
+  }
   return {value:g, status:"invalid"};
 }
 
@@ -1896,6 +1908,21 @@ function findGstins(text){
         out.push({gstin: f.value, line: li, buyerHint: (buyerAt >= 0 && li > buyerAt && li - buyerAt <= 12) || /(bill(ed)?\s*to|buyer|consignee|recipient|ship(ped)?\s*to|customer|party|m\/s|\bto\b)/i.test(ctx)});
       }
     }
+    // second look, on lines that mention GST: join the pieces and try every 15-character window
+    if (/G\s?\.?\s?S\s?\.?\s?T|GST|65T|6ST|C5T/i.test(up)){
+      const compact = up.replace(/[^A-Z0-9|!]/g, "");
+      for (let i = 0; i + 15 <= compact.length; i++){
+        const raw = compact.slice(i, i + 15);
+        const g = ocrDigits(raw.slice(0, 2)) + ocrLetters(raw.slice(2, 7)) + ocrDigits(raw.slice(7, 11)) + ocrLetters(raw.slice(11, 12)) + raw[12] + "Z" + raw[14];
+        if (!/^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(g)) continue;
+        const f = fixGstin(g);
+        if ((f.status === "ok" || f.status === "fixed") && !seen.has(f.value)){
+          seen.add(f.value);
+          const ctx = (lines[li - 1] || "") + " " + line + " " + (lines[li - 2] || "");
+          out.push({gstin: f.value, line: li, buyerHint: (buyerAt >= 0 && li > buyerAt && li - buyerAt <= 12) || /(bill(ed)?\s*to|buyer|consignee|recipient|ship(ped)?\s*to)/i.test(ctx)});
+        }
+      }
+    }
   });
   return out;
 }
@@ -2617,7 +2644,8 @@ async function runSelfTest(){
     const t0 = Date.now();
     const r = await freeReadOnly(sampleFile("sample-jpg", "sample-bill.jpg", "image/jpeg"));
     const bad = compareSample(r.fp && r.fp.j);
-    res.ocr = bad.length ? {ok:false, msg:"Built-in OCR ran but read: " + bad.join(", ") + "."} : {ok:true, msg:"Sample photo read correctly by the built-in OCR in " + Math.max(1, Math.round((Date.now() - t0) / 1000)) + " s."};
+    const saw = String((r.fp && r.fp.text) || r.text || "").split(/\n/).filter(l => /GST|G\.S\.T|6ST|65T/i.test(l)).slice(0, 2).map(l => l.trim().slice(0, 70)).join(" | ");
+    res.ocr = bad.length ? {ok:false, msg:"Built-in OCR ran but read: " + bad.join(", ") + "." + (saw ? " OCR saw: \u201c" + saw + "\u201d" : " OCR found no GST line.")} : {ok:true, msg:"Sample photo read correctly by the built-in OCR in " + Math.max(1, Math.round((Date.now() - t0) / 1000)) + " s."};
   } catch (e){ res.ocr = {ok:false, msg: e && e.code === "ocr_not_working" ? "Built-in OCR is not working: " + ocrProblem() + "." : errCopy(e && e.code)}; }
   S.selfTest.busy = false; S.selfTest.finished = Date.now();
   render();
