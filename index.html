@@ -338,6 +338,23 @@ header.top .toprow{display:block}
   .steps{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 /* ---- professional pass ---- */
+.side-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8FA398;padding:14px 12px 4px}
+.side-client{padding:0 0 4px}
+.side-co{display:flex;flex-direction:column;align-items:flex-start;width:100%;padding:9px 12px;border:1px solid #36483F;border-radius:8px;background:#26352E;color:#fff;font:inherit;text-align:left;cursor:pointer}
+.side-co b{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.side-co small{font-size:11.5px;color:#B9C6BF}
+.side-co:hover{border-color:#6F8A7D}
+.tbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:2px 0 0}
+.tbar-title{display:flex;align-items:baseline;gap:12px}
+.tbar-title h2{margin:0;font-family:var(--sans);font-size:19px;font-weight:650}
+.tbar-actions{display:flex;gap:8px;align-items:center}
+.sbar{display:flex;gap:0;margin:10px 0 0;border-bottom:0}
+.sbar button{border:0;border-bottom:2px solid transparent;background:transparent;padding:9px 16px 9px 0;margin-right:18px;font:inherit;font-size:14px;color:var(--muted);cursor:pointer}
+.sbar button:hover{color:var(--ink)}
+.sbar button[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--ledger)}
+.sbar-n{display:inline-block;margin-left:6px;padding:0 7px;border-radius:9px;background:var(--rule-soft);color:var(--muted);font-size:12px;font-weight:600;line-height:18px}
+.sbar button[aria-selected="true"] .sbar-n{background:var(--ledger-soft);color:var(--ledger)}
+header.top .wrap{padding-top:12px}
 .poststep{max-width:1180px}
 .setup-inline .bk-overlay{position:static;background:none;display:block;z-index:auto}
 .setup-inline .bk-panel{width:auto;max-width:980px;height:auto;box-shadow:none;border:1px solid var(--rule);border-radius:12px;padding:18px 22px}
@@ -658,7 +675,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 73 (opens fast: no OCR self-test at start)";
+const APP_VERSION = "22 Sep 2026 · build 74 (modules in the sidebar, a slim status bar, one Upload button)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3451,7 +3468,8 @@ async function enqueueFiles(files, target){
 }
 // a batch read from Collect lands you on Review, with the first new bill open
 function afterBatch(){
-  if (S.view !== "company" || S.step !== "collect" || docType() !== "bills") return;
+  if (S.view !== "company" || !(S.step === "collect" || S.advanceAfterRead) || docType() !== "bills") return;
+  S.advanceAfterRead = false;
   const fresh = S.jobs.filter(j => !j.advanced && (j.cid === S.coId || j.target === S.coId) && ["done", "partial", "held"].includes(j.status));
   S.jobs.forEach(j => { if (j.cid === S.coId || j.target === S.coId) j.advanced = true; });
   if (!fresh.length) return;
@@ -4026,8 +4044,19 @@ function renderSide(){
   side.classList.remove("hidden");
   const here = S.view === "company" ? "clients" : S.homeTab;
   const counts = {inbox: inboxTotal()};
-  side.innerHTML = '<div class="side-brand">TDS Desk<span>' + esc(S.firm.firmName || "") + "</span></div>" +
-    NAV.map(([id, label, icon]) => '<button class="side-link" data-nav="' + id + '"' + (here === id ? ' aria-current="page"' : "") + ">" +
+  const inCo = S.view === "company" && CO();
+  const mod = inCo ? docType() : "";
+  const co = inCo ? CO() : null, st = co ? (co.stats || {}) : {};
+  const modules = inCo ? '<div class="side-client"><span class="side-label">Client</span><button class="side-co" data-act="switch" title="Change client (F3)"><b>' + esc(co.name) + '</b><small>' + esc(co.gstin || "No GSTIN") + " \u00b7 change</small></button></div>" +
+    '<div class="side-label">Work</div>' +
+    [["bills", "Purchase", st.drafts || 0, '<path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/>'],
+     ["bank", "Bank", S.bank && S.bank.cid === co.id ? tabCounts(S.bank.rows).review : 0, '<path d="M3 10l9-6 9 6"/><path d="M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/>'],
+     ["sales", "Sales", 0, '<path d="M4 17l5-5 4 4 7-7"/><path d="M14 9h6v6"/>']].map(([id, label, n, icon]) =>
+      '<button class="side-link" data-dtype="' + id + '" data-tab="' + (id === "bills" ? "invoices" : id) + '"' + (mod === id && !isSetupTab(S.tab) ? ' aria-current="page"' : "") + '><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' + icon + "</svg><span>" + label + "</span>" + (n ? '<span class="side-count">' + n + "</span>" : "") + "</button>").join("") +
+    '<button class="side-link" data-act="setup"' + (isSetupTab(S.tab) ? ' aria-current="page"' : "") + '><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg><span>Client setup</span></button>' +
+    '<div class="side-label">Firm</div>' : "";
+  side.innerHTML = '<div class="side-brand">TDS Desk<span>' + esc(S.firm.firmName || "") + "</span></div>" + modules +
+    NAV.filter(n => !(inCo && n[0] === "clients")).map(([id, label, icon]) => '<button class="side-link" data-nav="' + id + '"' + (here === id && !inCo ? ' aria-current="page"' : "") + ">" +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' + icon + "</svg>" +
       "<span>" + label + "</span>" + (counts[id] ? '<span class="side-count">' + counts[id] + "</span>" : "") + "</button>").join("") +
     '<div class="side-grow"></div><div class="side-foot">' + bridgeChip(S.view === "company" ? CO() : null) + cloudChip() +
@@ -4081,24 +4110,21 @@ function stepCounts(){
   return {collect: inbox ? inbox + " in inbox" : "upload bills", review: (st.drafts || 0) + " to review", post: (st.waiting || 0) + " approved", done: (st.invoicesFy || 0) + " this year"};
 }
 function clientHeader(){
-  const co = CO(), setup = isSetupTab(S.tab);
-  const now = curStep(), c = stepCounts();
-  const steps = [["collect", "1", "Collect"], ["review", "2", "Review"], ["post", "3", "Post to Tally"], ["done", "4", "Done"]];
-  const types = [["bills", "Purchase bills", (co.stats || {}).drafts || 0], ["bank", "Bank", S.bank && S.bank.cid === co.id ? tabCounts(S.bank.rows).review : 0], ["sales", "Sales", 0]];
-  let h = '<div class="chead"><div class="chead-name"><button class="linkbtn crumb" data-nav="clients">Clients</button><span class="crumb-sep">/</span>' +
-    "<h2>" + esc(co.name) + '</h2><span class="note">' + esc(co.gstin || "No GSTIN") + " \u00b7 FY " + fyOf(null) + "</span></div>" +
-    '<div class="chead-actions"><button class="linkbtn" data-act="setup">' + (setup ? "Back to the work" : "Client setup") + "</button>" +
-    '<button class="btn small" data-act="switch" title="Change client (F3)">Change client <kbd>F3</kbd></button></div></div>';
+  const co = CO(), setup = isSetupTab(S.tab), t = docType();
+  const names = {bills: "Purchase bills", bank: "Bank", sales: "Sales invoices"};
+  const inbox = docqCount(S.coId);
+  let h = '<div class="tbar"><div class="tbar-title"><h2>' + (setup ? "Client setup" : names[t]) + '</h2><span class="note">' + esc(co.name) + "</span></div>" +
+    '<div class="tbar-actions">' + (inbox && !setup ? '<button class="btn small" data-step="collect">\u{1F4E5} ' + inbox + " in inbox</button>" : "") +
+    (setup ? '<button class="btn small" data-act="setup">Back to the work</button>' : (t === "sales" ? "" : '<button class="btn primary small" data-act="uploadHere">' + (t === "bank" ? "Upload statement" : "Upload bills") + "</button>")) + "</div></div>";
   if (setup){
-    h += '<nav class="dtabs" aria-label="Client setup">' + SETUP_TABS.map(([id, l]) =>
-      '<button data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + l + "</button>").join("") + "</nav>";
-    return h;
+    return h + '<nav class="sbar" aria-label="Client setup">' + SETUP_TABS.map(([id, l]) => '<button data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + l + "</button>").join("") + "</nav>";
   }
-  h += '<nav class="dtabs" aria-label="Kind of document">' + types.map(([id, l, n]) => '<button data-dtype="' + id + '" data-tab="' + (id === "bills" ? "invoices" : id) + '" aria-selected="' + (docType() === id) + '">' + l +
-    (n ? ' <span class="count">' + n + "</span>" : "") + "</button>").join("") + "</nav>";
-  h += '<div class="steps">' + steps.map(([id, n, label]) => '<button class="step" data-step="' + id + '"' + (now === id ? ' aria-current="step"' : "") + ">" +
-    '<span class="step-n">' + n + '</span><span class="step-t"><b>' + label + "</b><small>" + esc(c[id] || "") + "</small></span></button>").join("") + "</div>";
-  return h;
+  if (t === "sales") return h;
+  const now = curStep(), c = stepCounts();
+  const num0 = x => { const m = String(x || "").match(/\d+/); return m ? m[0] : ""; };
+  const items = [["review", "To review", num0(c.review)], ["post", "Ready to post", num0(c.post)], ["done", "Posted", num0(c.done)]];
+  return h + '<nav class="sbar" aria-label="Status">' + items.map(([id, l, n]) => '<button data-step="' + id + '" aria-selected="' + (now === id) + '">' + l +
+    (n !== "" ? ' <span class="sbar-n">' + n + "</span>" : "") + "</button>").join("") + "</nav>";
 }
 /* ---------- Post to Tally: everything this client has approved, in one place ---------- */
 function viewPostStep(){
@@ -4685,8 +4711,7 @@ function viewInvoices(){
   }).join("");
   const emptyMsg = S.filter === "draft" ? "No drafts for " + co.name + ". Upload invoices above." : S.filter === "approved" ? "Nothing approved yet." : S.filter === "duplicate" ? "No duplicates held." : "Nothing marked as no entry.";
   return docqPanel(S.coId) + '<div class="desk"><div>' +
-    '<div class="row" style="margin:0 0 10px;justify-content:space-between;align-items:center"><button class="btn small" data-step="collect">+ Upload more</button>' +
-    (S.jobs.some(j => ["waiting", "checking", "reading"].includes(j.status)) ? '<span class="note">Reading\u2026</span>' : "") + "</div>" +
+    (S.jobs.some(j => ["waiting", "checking", "reading"].includes(j.status)) ? '<p class="note" style="margin:0 0 8px">Reading\u2026</p>' : "") +
     (Object.values(d.entries).filter(e => e.status === "draft").length > 1 ? '<div class="row" style="margin:8px 0 0"><button class="btn small" data-act="revTable">Review all ' + Object.values(d.entries).filter(e => e.status === "draft").length + ' in a table</button></div>' : "") +
     '<div class="filters">' + f("draft", "To review") + f("approved", "Approved") + f("rejected", "No entry") + (cnt("duplicate") || S.filter === "duplicate" ? f("duplicate", "Duplicates") : "") + "</div>" +
     (items ? '<ul class="queue">' + items + "</ul>" : '<p class="empty">' + esc(emptyMsg) + "</p>") +
@@ -10752,6 +10777,13 @@ document.addEventListener("click", ev => {
     case "toBankDone": S.tab = "bank"; if (S.bank) S.bank.filter = "done"; render(); break;
     case "toBillsApproved": S.tab = "invoices"; S.filter = "approved"; S.selected = null; render(); break;
     case "collectBills": pickMode = "company"; document.getElementById("fileIn").click(); break;
+    case "uploadHere": {
+      if (docType() === "bank"){
+        if (S.tab !== "bank" || curStep() !== "review") goStep("review", "bank");
+        setTimeout(() => { const el = document.getElementById("bankIn"); if (el){ S.advanceAfterBank = true; el.click(); } }, 60);
+      } else { S.advanceAfterRead = true; pickMode = "company"; document.getElementById("fileIn").click(); }
+      break;
+    }
     case "signOutNow": {
       askConfirm({title: "Sign out of TDS Desk?", ok: "Sign out", body: '<p class="note">You will need your email and password to come back in. Work already synced stays in your firm account.</p>'}).then(a => {
         if (!a) return;
