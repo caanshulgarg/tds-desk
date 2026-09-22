@@ -695,7 +695,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 88 (bank statements: OCR when the text cannot be followed, then Google OCR)";
+const APP_VERSION = "22 Sep 2026 · build 89 (Claude works on the plan; read again with Google OCR or Claude in bills, sales and bank)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3081,7 +3081,7 @@ function crossCheckOcr(j, texts){
   }
   return unsure;
 }
-async function extract(file, careful, page, cidHint){
+async function extract(file, careful, page, cidHint, force){
   if (!S.engine && !S.freeFirst) throw {code: S.sampleReady ? "no_engine" : "not_ready"};
   let text = "", canvases = [], kind;
   if (isPdf(file)){
@@ -3099,9 +3099,21 @@ async function extract(file, careful, page, cidHint){
   const trace = [];
   const step = (name, ok, note) => trace.push({step: name, ok: !!ok, note: note || ""});
 
+  // asked for a particular reader: Google OCR first, or straight to Claude
+  if (force === "google"){
+    if (!googleReady()) throw {code: "no_google_key"};
+    const o = await googleOcr(canvases[0]);
+    let fpG = freeParse(o.text, cidHint || null, file.name, {ocr: true});
+    if (fpG.cid && !D(fpG.cid).loaded){ try { await Store.loadCompany(fpG.cid); fpG = freeParse(o.text, fpG.cid, file.name, {ocr: true}); } catch (e){} }
+    if (kind === "pdf_text" && !fpG.ok){ const r2 = freeParse(text + "\n" + o.text, fpG.cid || cidHint || null, file.name, {ocr: true}); if (r2.ok) fpG = r2; }
+    trace.push({step: "Google OCR (asked for)", ok: !!fpG.ok, note: fpG.ok ? "read" : (fpG.why || []).join(", ")});
+    if (fpG.ok) return {j: fpG.j, kind, preview, method: "google-ocr", checks: fpG.checks, trace};
+    if (!S.engine) throw {code: "free_failed", detail: (fpG.why || []).join(", "), trace, partial: fpG.found >= 2 ? {j: fpG.j, missing: fpG.missing, kind, preview} : null};
+    force = "claude";     // Google could not read it: Claude next
+  }
   // 1. free
   let freeWhy = "", lastFree = null;
-  if (!careful && S.freeFirst){
+  if (!careful && S.freeFirst && force !== "claude"){
     let ftext = "", conf = 0, fp = null;
     const tryText = async (t, c) => {
       if (!t || t.replace(/\s/g, "").length < 40) return null;
@@ -3197,7 +3209,7 @@ async function extract(file, careful, page, cidHint){
     }
   } else if (careful) step("Free reading", false, "skipped: careful re-read asked for");
   else step("Free reading", false, "switched off in Settings");
-  if (!S.engine) throw {code:"free_failed", detail: freeWhy, trace, partial: lastFree && lastFree.found >= 2 ? {j: lastFree.j, missing: lastFree.missing, kind, preview} : null};
+  if (!S.engine) throw {code: force === "claude" ? "no_engine" : "free_failed", detail: freeWhy, trace, partial: lastFree && lastFree.found >= 2 ? {j: lastFree.j, missing: lastFree.missing, kind, preview} : null};
 
   // 2. text PDFs: Claude with the text only
   if (kind === "pdf_text" && !careful){
@@ -3229,11 +3241,11 @@ function needsCarefulRead(r){
   const unsure = Array.isArray(j.uncertainFields) && j.uncertainFields.some(f => f === "totalAmount" || f === "taxableValue");
   return missing || unsure;
 }
-async function extractBest(file, onCareful, page, cidHint){
-  let r = await extract(file, false, page, cidHint);
+async function extractBest(file, onCareful, page, cidHint, force){
+  let r = await extract(file, false, page, cidHint, force);
   if (needsCarefulRead(r)){
     if (onCareful) onCareful();
-    try { const r2 = await extract(file, true, page, cidHint); r2.freeWhy = r.freeWhy; r2.trace = (r.trace || []).concat(r2.trace || []); r = r2; } catch (e){ /* keep the first reading */ }
+    try { const r2 = await extract(file, true, page, cidHint, force); r2.freeWhy = r.freeWhy; r2.trace = (r.trace || []).concat(r2.trace || []); r = r2; } catch (e){ /* keep the first reading */ }
   }
   return r;
 }
@@ -3332,11 +3344,13 @@ async function testReader(){
 function pickEngine(){
   const cfg = apiSettings();
   if (S.sample) S.engine = "claude";
-  else if (cfg.key && !window.claude) S.engine = "api";
   else if (cfg.key) S.engine = "api";
+  else if (Cloud.on() && S.account) S.engine = "api";     // the plan holds the key; the gateway charges the firm
   else S.engine = null;
   if (S.engine === "api") S.imgMax = 6;
 }
+function claudeReady(){ return !!S.engine && !S.readBlocked; }
+function googleReady(){ return !!(googleSettings().key || (Cloud.on() && S.account)); }
 
 function errCopy(code){
   return errText(code) + (code ? " (" + code + ")" : "");
@@ -3694,6 +3708,7 @@ async function enqueueFiles(files, target){
     j.donePromise = new Promise(res => { j.markDone = res; });
     if (j.status === "failed") j.markDone();
     j.id = uid("j"); j.target = target; j.status = j.status || "waiting";
+    j.force = j.force || null;
     j.name = j.file.name + (j.page ? (Array.isArray(j.page) ? " · pages " + j.page[0] + "\u2013" + j.page[j.page.length - 1] : " · page " + j.page) : "");
     S.jobs.push(j);
   });
@@ -3753,7 +3768,7 @@ async function runJob(j){
   if (!(await charge("bills", 1, j.name, "Bill read"))){ j.status = "failed"; j.msg = "Credit finished. Ask the administrator to add credit."; softRender(); return; }
   j.status = "reading"; j.msg = ""; softRender();
   let r;
-  try { r = await extractBest(j.file, () => { j.msg = "Hard to read, reading again carefully"; softRender(); }, j.page, j.target === "auto" ? null : j.target); }
+  try { r = await extractBest(j.file, () => { j.msg = "Hard to read, reading again carefully"; softRender(); }, j.page, j.target === "auto" ? null : j.target, j.force); }
   catch (err){
     if (err && err.partial && j.target !== "auto"){
       const cid = j.target, e = newEntry(j.name), pr = err.partial;
@@ -3968,7 +3983,10 @@ function viewJobs(filterFn){
   if (busy) h += '<div class="bar jobbar"><div class="add" style="left:0;width:' + Math.round((jobs.length - busy) / jobs.length * 100) + '%"></div></div>';
   h += '<ul class="joblist">' + jobs.slice().reverse().map(j => {
     const [t, cls] = label[j.status] || [j.status, "no"];
-    const acts = (j.status === "failed" ? '<button class="btn small" data-job="retry" data-jid="' + j.id + '">Retry</button><button class="btn small" data-job="type" data-jid="' + j.id + '">Type it in</button>' : "") +
+    const acts = (j.status === "failed" || j.status === "partial" ? '<button class="btn small" data-job="retry" data-jid="' + j.id + '">Read again</button>' +
+        '<button class="btn small" data-job="google" data-jid="' + j.id + '"' + (googleReady() ? "" : " disabled") + '>With Google OCR</button>' +
+        '<button class="btn small" data-job="claude" data-jid="' + j.id + '"' + (claudeReady() ? "" : " disabled") + '>With Claude</button>' +
+        (j.status === "failed" ? '<button class="btn small" data-job="type" data-jid="' + j.id + '">Type it in</button>' : "") : "") +
       ((j.status === "duplicate" && j.dupRef && j.dupRef.cid) || ((j.status === "held" || j.status === "done" || j.status === "typed") && j.entryId) ? '<button class="btn small" data-job="open" data-jid="' + j.id + '">Open</button>' : "");
     const via = j.method ? " " + readBadge(READ_LABELS[j.method] || j.method) : "";
     return '<li><div class="jn"><span class="jname">' + esc(j.name) + via + '</span><span class="tag ' + cls + '">' + (j.status === "reading" || j.status === "checking" ? '<span class="dot sm"></span>' : "") + t + "</span></div>" +
@@ -4114,6 +4132,32 @@ function undoApproval(e){
   Store.saveEntry(cid, e); toast("Approval undone. The entry is back in drafts."); S.filter = "draft"; refreshStats(cid); render();
 }
 function setStatus(e, st, msg){ e.status = st; Store.saveEntry(S.coId, e); if (msg) toast(msg); if (st === "draft") S.filter = "draft"; refreshStats(S.coId); render(); }
+// read this bill again with a chosen reader, keeping the same bill
+async function rereadEntry(e, force){
+  const cid = S.coId, file = S.files[e.id];
+  if (!file){ toast("The file for this bill is not on this computer any more. Upload it again."); return; }
+  if (force === "claude" && !claudeReady()){ toast("Claude is not available on this plan or in this view."); return; }
+  if (force === "google" && !googleReady()){ toast("Google OCR is not set up: add a key in Settings, or use a plan that includes it."); return; }
+  S.reading[e.id] = true; toast(force === "claude" ? "Reading again with Claude\u2026" : force === "google" ? "Reading again with Google OCR\u2026" : "Reading again\u2026"); render();
+  try {
+    const r = await extractBest(file, null, S.filePages[e.id], cid, force);
+    applyExtraction(e, r.j, cid);
+    e.readMode = readLabel(r); e.readTrace = r.trace || []; e.readError = ""; e.uncertain = e.uncertain || [];
+    Store.saveEntry(cid, e);
+    toast("Read again: " + readLabel(r) + ". Check the fields.");
+  } catch (err){
+    e.readError = errCopy(err && err.code) + (err && err.detail ? " " + err.detail : "");
+    Store.saveEntry(cid, e);
+    toast("Could not read it that way: " + errCopy(err && err.code));
+  }
+  delete S.reading[e.id]; refreshStats(cid); render();
+}
+function rereadButtons(e){
+  return '<div class="row" style="gap:8px;margin-top:8px"><span class="note">Read again:</span>' +
+    '<button class="btn small" data-reread="free" data-rid="' + e.id + '">Free</button>' +
+    '<button class="btn small" data-reread="google" data-rid="' + e.id + '"' + (googleReady() ? "" : " disabled title=\"Google OCR is not set up\"") + ">Google OCR</button>" +
+    '<button class="btn small" data-reread="claude" data-rid="' + e.id + '"' + (claudeReady() ? "" : " disabled title=\"Claude is not available here\"") + ">Claude</button></div>";
+}
 function removeEntry(e){ delete D().entries[e.id]; Store.deleteEntry(S.coId, e.id); unregisterHash(S.coId, e.fileHash); delete S.files[e.id]; if (S.selected === e.id) S.selected = null; toast("Invoice deleted."); refreshStats(S.coId); render(); }
 
 /* Summary kept on each client so the client list needs no extra loading */
@@ -4447,10 +4491,9 @@ function viewCollect(){
     ? '<section class="collect-card"><h3>Upload a bank statement</h3><div class="drop" id="bankDrop" tabindex="0" role="button" data-act="bankPick" aria-label="Upload a bank statement"><strong>Drop a statement here, or click to choose</strong>' +
       '<div class="note">Excel, CSV or PDF from any bank. The balances are checked, and the statement is filed under the right account.</div></div><input type="file" id="bankIn" accept=".xls,.xlsx,.csv,.pdf,.txt" multiple class="hidden"></section>'
     : '<section class="collect-card"><h3>Upload purchase bills</h3>' + uploadBlock(CO()) + "</section>";
-  const recent = (S.jobs || []).slice(-6).reverse();
+  const mine = viewJobs(j => j.target === S.coId || j.cid === S.coId || j.target === "auto");
   return '<div class="collect">' + (inbox || '<p class="note" style="margin:0 0 12px">Nothing waiting in the inbox for ' + esc(CO().name) + ".</p>") + card +
-    (recent.length && t === "bills" ? '<section class="collect-card"><h3>Read just now</h3><ul class="recent">' + recent.map(j => "<li><b>" + esc(j.name) + "</b> \u00b7 " + esc(j.status) + (j.msg ? ' <span class="note">' + esc(j.msg).slice(0, 90) + "</span>" : "") + "</li>").join("") +
-      '</ul><button class="btn small" data-step="review">Review them</button></section>' : "") + "</div>";
+    (mine ? '<section class="collect-card">' + mine + '<button class="btn small" data-step="review">Review them</button></section>' : "") + "</div>";
 }
 /* ---------- Today: what needs doing, across every client ---------- */
 function viewToday(){
@@ -5068,6 +5111,7 @@ function viewDetail(e){
       (/^free (OCR|\(PDF)/.test(e.readMode) ? ": no cost" : e.readMode === "Google OCR" ? ": Google OCR, no Claude cost" : /text only/.test(e.readMode) ? ": low Claude cost" : /^Claude/.test(e.readMode) ? ": normal Claude cost" : "") + "</div>" : "") +
     (e.checks && e.checks.length && e.status === "draft" ? '<div class="note" style="margin-top:2px">Checks passed: ' + esc(e.checks.join(" · ")) + "</div>" : "") +
     '<div class="note">' + esc(e.fileName) + (e.routedBy ? ", filed here by " + esc(e.routedBy) : "") + (c.party || !x.vendorName ? "" : ", new deductee") + "</div></div>" +
+    (e.status === "draft" ? rereadButtons(e) : "") +
     '<div class="actions">' + (e.status === "draft" ? '<button class="btn small danger" data-act="delete">Delete</button>' : "") + "</div></section>";
   if (e.readError) h += '<section><p class="banner" style="margin:0">' + esc(e.readError) + "</p></section>";
   if (!ro && e.readMode !== "free (partly read)" && (e.handwritten || (e.uncertain && e.uncertain.length))){
@@ -5932,11 +5976,43 @@ function scoreParse(p){
   return rows.length - chk.bad * 3;
 }
 // Try every reader and keep the one whose rows agree best with the running balance
-async function readStatement(file, progress){
+// Claude reads the pages as images and lists the transactions. Used when asked, or when nothing else could read the file.
+async function claudeStatement(file, progress){
+  if (!claudeReady()) throw {code: "no_engine"};
+  const canvases = await statementImages(file);
+  const rows = [], metaLines = [];
+  for (let i = 0; i < canvases.length; i++){
+    if (progress) progress("Claude is reading page " + (i + 1) + " of " + canvases.length + "\u2026");
+    if (!(await charge("bills", 1, file.name, "Statement page read by Claude"))) throw {code: "no_credit"};
+    const img = await imgBlob(canvases[i], "page");
+    const prompt = "This is page " + (i + 1) + " of a bank statement. List every transaction row in the table, in the order printed.\n" +
+      "Reply with only JSON: {\"account\":\"\",\"opening\":null,\"closing\":null,\"rows\":[{\"date\":\"YYYY-MM-DD\",\"narration\":\"\",\"withdrawal\":0,\"deposit\":0,\"balance\":0}]}\n" +
+      "Rules: one entry per printed transaction; keep the narration on one line, joining text that wraps; withdrawal and deposit are numbers without commas, 0 when empty; balance is the running balance printed on that row; dates as YYYY-MM-DD; do not invent rows; opening and closing only if printed on this page.";
+    let j = {};
+    try { j = await claudeRead(prompt, [img], false) || {}; } catch (e){ if (i === 0) throw e; break; }
+    if (j.account) metaLines.push("Account number " + j.account);
+    if (j.opening != null) metaLines.push("Opening balance " + j.opening);
+    if (j.closing != null) metaLines.push("Closing balance " + j.closing);
+    [].concat(j.rows || []).forEach(r => {
+      const d = bankDate(String(r.date || ""));
+      if (!d) return;
+      const deb = num(r.withdrawal), cre = num(r.deposit);
+      if (!deb && !cre) return;
+      rows.push({date: d, narr: String(r.narration || "").replace(/\s+/g, " ").trim(), debit: deb, credit: cre, balance: r.balance == null ? null : num(r.balance)});
+    });
+  }
+  return {rows, meta: statementMeta(metaLines)};
+}
+async function readStatement(file, progress, force){
   const diag = {file: file.name, size: file.size, tried: []};
   const note = (method, p, err) => diag.tried.push({method, rows: p && p.rows ? p.rows.length : 0, score: scoreParse(p), error: err ? bankErr(err) : ""});
   let best = null;
   const consider = (method, p) => { const sc = scoreParse(p); note(method, p); if (sc > 0 && (!best || sc > best.score)) best = {p, score: sc, method}; };
+  if (force === "claude"){
+    try { consider("Claude read the pages", await claudeStatement(file, progress)); }
+    catch (e){ note("Claude", null, e); if (!best) throw Object.assign({diag}, e); }
+    if (best){ best.p.method = best.method; best.p.diag = diag; return best.p; }
+  }
   const isSheet = /\.(xlsx|xls|xlsm|csv|txt)$/i.test(file.name);
   const isImg = isImage(file);
   if (isSheet){
@@ -5966,7 +6042,7 @@ async function readStatement(file, progress){
         try { consider("OCR without headings", parseByLines(ocrPages.map(p => ({items: joinOcrWords(p.items)})))); } catch (e){ note("OCR without headings", null, e); }
       } catch (e){ note("OCR", null, e); }
     }
-    if ((!best || best.score < 3) && googleAvailable()){
+    if (force === "google" || ((!best || best.score < 3) && googleAvailable())){
       try {
         const gPages = await parseScannedStatement(file, progress, "google");
         diag.googleWords = gPages.reduce((a, p) => a + p.items.length, 0);
@@ -6907,15 +6983,16 @@ function suggestAll(rows, onlyOpen){
 }
 /* ---------- upload ---------- */
 function isBankFile(f){ return /\.(xlsx|xls|xlsm|csv|txt|pdf|jpe?g|png|webp|heic)$/i.test(f.name) || /^image\//.test(f.type); }
-async function uploadStatements(files){
+async function uploadStatements(files, force){
   const b = B(); if (!b) return;
   const co = CO(b.cid);
   for (const file of files){
+    b.lastFile = file;
     b.busy = "Reading " + file.name + "…"; render();
     try {
       const hash = await fileHash(file);
       if (b.stmts.some(s => s.hash === hash)){ toast(file.name + " was already uploaded."); continue; }
-      const parsed = await readStatement(file, msg => { b.busy = file.name + ": " + msg; render(); });
+      const parsed = await readStatement(file, msg => { b.busy = file.name + ": " + msg; render(); }, force);
       if (!parsed.rows.length) throw {code: "bank_no_rows", diag: parsed.diag};
       if (!(await charge("bank", parsed.rows.length, file.name, parsed.rows.length + " statement lines"))){ b.busy = ""; render(); return; }
       const meta = parsed.meta;
@@ -7533,7 +7610,11 @@ function viewBank(){
     '<button class="linkbtn" data-act="bankOpenMoved">Open ' + esc(b.moved.name) + '</button> <button class="linkbtn" data-act="bankDismissMoved">Dismiss</button></div>';
   if (b.postReport) h += postReportHtml(b.postReport);
   if (b.lastFail) h += '<div class="bk-alert bad"><b>' + esc(b.lastFail.file) + " was not read.</b> " + esc(b.lastFail.msg) +
-    ' <button class="linkbtn" data-act="bankCopyReport">Copy details for support</button> <button class="linkbtn" data-act="bankDismissFail">Dismiss</button><textarea id="bankReport" readonly hidden>' + esc(b.lastFail.report) + "</textarea></div>";
+    '<div class="row" style="gap:8px;margin-top:8px"><span class="note">Read it again:</span>' +
+    '<button class="btn small" data-act="bankRetryFree">Try again</button>' +
+    '<button class="btn small" data-act="bankRetryGoogle"' + (googleReady() ? "" : " disabled title=\"Google OCR is not set up\"") + '>With Google OCR</button>' +
+    '<button class="btn small primary" data-act="bankRetryClaude"' + (claudeReady() ? "" : " disabled title=\"Claude is not available here\"") + '>With Claude</button>' +
+    '<button class="linkbtn" data-act="bankCopyReport">Copy details for support</button><button class="linkbtn" data-act="bankDismissFail">Dismiss</button></div><textarea id="bankReport" readonly hidden>' + esc(b.lastFail.report) + "</textarea></div>";
   // set-up steps
   if (!hasLedgerList()){
     if (bridgeLive(co)) h += '<div class="bk-setup"><div><b>Loading ledgers from Tally\u2026</b><div class="note">' + esc(Bridge.openFor(co).name) + " is open in Tally.</div></div></div>";
@@ -8355,6 +8436,14 @@ function bankClick(t){
       // with a date range chosen, only the ready lines inside it are posted
       if (bankRangeOn()){ const ids = B().rows.filter(r => r.state === "ready" && inBankRange(r)).map(r => r.id); if (!ids.length){ toast("No ready lines in this date range."); return true; } postBankToTally(ids); }
       else postBankToTally();
+      return true;
+    }
+    case "bankRetryFree": case "bankRetryGoogle": case "bankRetryClaude": {
+      const b = B(), f = b && b.lastFile;
+      if (!f){ toast("Upload the statement again: the file is not held on this computer."); return true; }
+      b.lastFail = null; render();
+      const how = t.dataset.act;
+      uploadStatements([f], how === "bankRetryGoogle" ? "google" : how === "bankRetryClaude" ? "claude" : null);
       return true;
     }
     case "bankRangeClear": { const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); render(); return true; }
@@ -9499,7 +9588,7 @@ function salesFromClaude(j, co){
     pos: stateCodeFrom(j.placeOfSupply) || stateOfGstin(cust), taxable: num(j.taxableValue), cgst: num(j.cgst), sgst: num(j.sgst), igst: num(j.igst), cess: num(j.cess),
     total: num(j.totalAmount), irn: String(j.irn || ""), dueDays: num(j.dueDays), items};
 }
-async function readSalesFile(file, cid, progress, pageList){
+async function readSalesFile(file, cid, progress, pageList, force){
   const co = CO(cid), trace = [];
   let text = "", canvases = [], kind;
   if (isPdf(file)){ const r = await pdfPages(file, pageList || [1, 2]); text = r.text; canvases = r.canvases; kind = text.replace(/\s/g, "").length >= 80 ? "pdf_text" : "pdf_scan"; }
@@ -9524,7 +9613,10 @@ async function readSalesFile(file, cid, progress, pageList){
       if (tryText(o.text, "Built-in OCR")) break;
     }
   }
-  if (best && best.ok){ best.x.noteKind = best.x.noteKind || noteKindOf(String(text || "").split("\n")); return {x: best.x, method: "free", trace}; }
+  if (force === "google" && googleReady()){
+    try { const o = await googleOcr(canvases[0] || (await imageToCanvas(file))); if (tryText(o.text, "Google OCR")) { /* best updated inside */ } } catch (e){ trace.push({step: "Google OCR", ok: false, note: (e && e.code) || "failed"}); }
+  }
+  if (best && best.ok && force !== "claude"){ best.x.noteKind = best.x.noteKind || noteKindOf(String(text || "").split("\n")); return {x: best.x, method: force === "google" ? "google-ocr" : "free", trace}; }
   // Claude reads the rest (items included)
   if (S.engine){
     if (progress) progress("asking Claude");
@@ -9543,6 +9635,21 @@ async function readSalesFile(file, cid, progress, pageList){
 function newInvoice(x, source, extra){
   return Object.assign({id: uid("sv"), source, status: "review", x: Object.assign({number: "", date: "", customerName: "", customerGstin: "", address: "", pos: "", taxable: 0, cgst: 0, sgst: 0, igst: 0, cess: 0, total: 0, items: []}, x),
     customerLedger: "", userLedger: false, createdAt: new Date().toISOString()}, extra || {});
+}
+async function rereadSales(v, force){
+  const s = SL(); if (!s) return;
+  const file = S.files["sv:" + v.id];
+  if (!file){ toast("The file for this invoice is not on this computer any more. Upload it again."); return; }
+  if (force === "claude" && !claudeReady()){ toast("Claude is not available on this plan or in this view."); return; }
+  if (force === "google" && !googleReady()){ toast("Google OCR is not set up."); return; }
+  s.busy = force === "claude" ? "Reading again with Claude\u2026" : force === "google" ? "Reading again with Google OCR\u2026" : "Reading again\u2026"; render();
+  try {
+    const r = await readSalesFile(file, s.cid, m => { s.busy = m + "\u2026"; render(); }, null, force);
+    Object.assign(v.x, r.x || {});
+    v.method = r.method; v.problems = []; mapInvoice(v); saveSales();
+    toast("Read again: " + (r.method || "") + ". Check the invoice.");
+  } catch (e){ toast("Could not read it that way: " + errCopy(e && e.code)); }
+  s.busy = ""; render();
 }
 async function uploadSales(files){
   const s = SL(); if (!s) return;
@@ -9892,6 +9999,9 @@ function salesDetailHtml(v){
     '<p class="note">Voucher type \u201c' + esc(s.cfg.voucherType || "Sales") + "\u201d \u00b7 bill-wise New Ref " + esc(x.number) + (co.createOptional ? " \u00b7 posted as Optional" : "") + "</p></section>";
   if ((v.trace || []).length) h += '<section><h3>How it was read</h3><ol class="note">' + v.trace.map(t => "<li>" + (t.ok ? "\u2714 " : "\u2716 ") + esc(t.step) + ": " + esc(t.note || "") + "</li>").join("") + "</ol></section>";
   h += '<section class="row" style="gap:6px;flex-wrap:wrap">' +
+    (v.source === "upload" ? '<span class="note">Read again:</span><button class="btn small" data-svact="reread" data-force="" data-id="' + v.id + '">Free</button>' +
+      '<button class="btn small" data-svact="reread" data-force="google" data-id="' + v.id + '"' + (googleReady() ? "" : " disabled") + '>Google OCR</button>' +
+      '<button class="btn small" data-svact="reread" data-force="claude" data-id="' + v.id + '"' + (claudeReady() ? "" : " disabled") + ">Claude</button>" : "") +
     (v.status === "review" ? '<button class="btn primary" data-svact="confirm" data-id="' + v.id + '">Confirm</button>' : "") +
     (v.status === "ready" ? '<button class="btn" data-svact="unready" data-id="' + v.id + '">Back to review</button>' : "") +
     '<button class="btn" data-svact="print" data-id="' + v.id + '">Print invoice</button>' +
@@ -10095,6 +10205,7 @@ function salesClick(t){
   if (t.dataset.svact){
     const v = inv(t.dataset.id); if (!v) return true;
     const a = t.dataset.svact;
+    if (a === "reread"){ rereadSales(v, t.dataset.force || null); return true; }
     if (a === "print"){ printInvoiceHtml(invoiceHtml(v.x, CO(s.cid), s.cfg), v.x.number); return true; }
     if (a === "file"){ const f = S.files["sv:" + v.id]; if (f){ const u = URL.createObjectURL(f); window.open(u, "_blank"); setTimeout(() => URL.revokeObjectURL(u), 60000); } return true; }
     if (a === "edit"){ s.openId = null; startDraft(v.id); return true; }
@@ -10742,6 +10853,7 @@ async function loadAccount(quiet){
   try {
     const a = await Cloud.rpc("my_account");
     S.account = a || null;
+    try { pickEngine(); } catch (e){}      // the plan may provide Claude
     if (a && a.superadmin && !S.adminData) loadAdminOverview(true);
     if (!quiet) render();
     return a;
@@ -11338,6 +11450,7 @@ document.addEventListener("click", ev => {
     });
     return;
   }
+  if (t.dataset.reread){ const e0 = D().entries[t.dataset.rid]; if (e0) rereadEntry(e0, t.dataset.reread === "free" ? null : t.dataset.reread); return; }
   if (t.dataset.revopen){ S.selected = t.dataset.revopen; S.drawerOpen = true; render(); return; }
   if (t.dataset.revapprove){ const e0 = D().entries[t.dataset.revapprove]; if (e0){ approve(e0); refreshStats(S.coId); toast("Approved."); render(); } return; }
   if (t.hasAttribute && (t.hasAttribute("data-revsel") || t.hasAttribute("data-revall"))) return;
@@ -11396,7 +11509,7 @@ document.addEventListener("click", ev => {
   if (t.dataset.job){
     const j = S.jobs.find(x => x.id === t.dataset.jid);
     if (!j) return;
-    if (t.dataset.job === "retry"){ S.readBlocked = null; j.status = "waiting"; j.msg = ""; j.prev = null; j.donePromise = new Promise(res => { j.markDone = res; }); S.batchSize = 2; pump(); render(); }
+    if (t.dataset.job === "retry" || t.dataset.job === "google" || t.dataset.job === "claude"){ S.readBlocked = null; j.force = t.dataset.job === "retry" ? null : t.dataset.job; j.advanced = false; j.status = "waiting"; j.msg = ""; j.prev = null; j.donePromise = new Promise(res => { j.markDone = res; }); S.batchSize = 2; pump(); render(); }
     else if (t.dataset.job === "type") typeItIn(j);
     else if (t.dataset.job === "open") openJobEntry(j);
     return;
