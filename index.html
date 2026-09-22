@@ -338,6 +338,18 @@ header.top .toprow{display:block}
   .steps{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 /* ---- professional pass ---- */
+.poststep{max-width:1180px}
+.setup-inline .bk-overlay{position:static;background:none;display:block;z-index:auto}
+.setup-inline .bk-panel{width:auto;max-width:980px;height:auto;box-shadow:none;border:1px solid var(--rule);border-radius:12px;padding:18px 22px}
+.setup-inline .bk-panel-head [data-act="bankSetClose"],.setup-inline .bk-panel-head .icon{display:none}
+.post-sum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 12px}
+.pcard{display:flex;flex-direction:column;gap:2px;padding:14px 16px;border:1px solid var(--rule);border-radius:10px;background:var(--sheet);color:var(--ink);text-decoration:none}
+.pcard span{font-size:13px;color:var(--muted)}.pcard b{font-size:26px;font-weight:650}.pcard small{font-size:12.5px;color:var(--muted)}
+.pcard.on{border-color:var(--ledger);box-shadow:inset 0 -3px 0 var(--ledger)}
+.psec{border-top:1px solid var(--rule);padding:16px 0 8px;scroll-margin-top:190px}
+.psec > h3{margin:0 0 10px;font-size:16px}
+.psec .two{gap:16px}
+.actionbar .wrap{gap:8px;row-gap:6px}
 header.top .cobar{display:block}
 .dtabs{border-bottom:1px solid var(--rule);margin:12px 0 0}
 .steps{margin:12px 0 14px}
@@ -646,7 +658,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 71 (lighter website, cleaner layout, Collect moves on to Review)";
+const APP_VERSION = "22 Sep 2026 · build 72 (one Post and one Done step per client; client setup in four tabs)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3966,7 +3978,13 @@ function render(){
   const banner = creditBanner() + (S.storeKind === "db" || (Cloud.on() && Cloud.st && !Cloud.st.error) ? "" :
     '<p class="banner">' + (S.storeKind === "local" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
-  if (S.view === "company" && CO() && S.step === "collect" && !["settings", "deductees"].includes(S.tab) && !S.loadingCo){
+  if (S.view === "company" && CO() && !S.loadingCo && S.tab === "export"){
+    body = viewPostStep();
+  } else if (S.view === "company" && CO() && !S.loadingCo && S.tab === "done"){
+    body = viewDoneStep();
+  } else if (S.view === "company" && CO() && !S.loadingCo && (S.tab === "bankset" || S.tab === "bankrules")){
+    body = viewBankSetup(S.tab === "bankrules" ? "rules" : "accounts");
+  } else if (S.view === "company" && CO() && S.step === "collect" && !isSetupTab(S.tab) && !S.loadingCo){
     body = viewCollect();
   } else if (S.view === "company" && CO()){
     body = S.loadingCo ? '<p class="note">Opening ' + esc(CO().name) + "…</p>" :
@@ -4016,9 +4034,11 @@ function renderSide(){
     '<div class="side-ver">' + esc(APP_VERSION.split("\u00b7")[1] || APP_VERSION) + "</div></div>";
 }
 /* ---------- which step and which kind of document a client is showing ---------- */
-function docType(){ return S.tab === "bank" ? "bank" : S.tab === "sales" ? "sales" : "bills"; }
+function docType(){ return ["export", "done"].includes(S.tab) ? (S.postFocus || "bills") : S.tab === "bank" ? "bank" : S.tab === "sales" ? "sales" : "bills"; }
 function curStep(){
   if (S.step === "collect") return "collect";
+  if (S.tab === "export") return "post";
+  if (S.tab === "done") return "done";
   const t = docType();
   if (t === "bills") return S.tab === "export" ? "post" : ["approved", "rejected"].includes(S.filter) ? "done" : "review";
   if (t === "bank"){ const f = (S.bank && S.bank.filter) || "review"; return f === "ready" ? "post" : ["done", "all"].includes(f) ? "done" : "review"; }
@@ -4028,6 +4048,13 @@ function goStep(step, type){
   type = type || docType();
   S.step = step === "collect" ? "collect" : null;
   S.selected = null; S.reviewTable = false;
+  if (step === "post" || step === "done"){
+    S.tab = step === "post" ? "export" : "done"; S.postFocus = type;
+    if (!S.bank || S.bank.cid !== S.coId) loadBank(S.coId).then(() => render());
+    render(); window.scrollTo(0, 0);
+    if (step === "post" && type !== "bills") setTimeout(() => { const el = document.getElementById("post-" + type); if (el) el.scrollIntoView({block: "start"}); }, 50);
+    return;
+  }
   if (type === "bills"){
     S.tab = step === "post" ? "export" : "invoices";
     if (step === "review") S.filter = "draft";
@@ -4053,7 +4080,7 @@ function stepCounts(){
   return {collect: inbox ? inbox + " in inbox" : "upload bills", review: (st.drafts || 0) + " to review", post: (st.waiting || 0) + " approved", done: (st.invoicesFy || 0) + " this year"};
 }
 function clientHeader(){
-  const co = CO(), setup = ["settings", "deductees"].includes(S.tab);
+  const co = CO(), setup = isSetupTab(S.tab);
   const now = curStep(), c = stepCounts();
   const steps = [["collect", "1", "Collect"], ["review", "2", "Review"], ["post", "3", "Post to Tally"], ["done", "4", "Done"]];
   const types = [["bills", "Purchase bills", (co.stats || {}).drafts || 0], ["bank", "Bank", S.bank && S.bank.cid === co.id ? tabCounts(S.bank.rows).review : 0], ["sales", "Sales", 0]];
@@ -4062,7 +4089,7 @@ function clientHeader(){
     '<div class="chead-actions"><button class="linkbtn" data-act="setup">' + (setup ? "Back to the work" : "Client setup") + "</button>" +
     '<button class="btn small" data-act="switch" title="Change client (F3)">Change client <kbd>F3</kbd></button></div></div>';
   if (setup){
-    h += '<nav class="dtabs" aria-label="Client setup">' + [["settings", "Company and Tally"], ["deductees", "Suppliers and TDS"]].map(([id, l]) =>
+    h += '<nav class="dtabs" aria-label="Client setup">' + SETUP_TABS.map(([id, l]) =>
       '<button data-tab="' + id + '" aria-selected="' + (S.tab === id) + '">' + l + "</button>").join("") + "</nav>";
     return h;
   }
@@ -4072,6 +4099,59 @@ function clientHeader(){
     '<span class="step-n">' + n + '</span><span class="step-t"><b>' + label + "</b><small>" + esc(c[id] || "") + "</small></span></button>").join("") + "</div>";
   return h;
 }
+/* ---------- Post to Tally: everything this client has approved, in one place ---------- */
+function viewPostStep(){
+  const co = CO(), v = Object.values(D().entries);
+  const bills = v.filter(e => e.status === "approved" && !e.exportedAt);
+  const billAmt = bills.reduce((a, e) => a + num(e.x.total), 0);
+  const bankOn = S.bank && S.bank.cid === co.id && !S.bank.loading;
+  const ready = bankOn ? S.bank.rows.filter(r => r.state === "ready") : [];
+  const st = bankOn ? curStmt() : null;
+  const sales = S.sales && S.sales.cid === co.id ? S.sales.list.filter(x => x.status === "approved" && !x.postedAt) : [];
+  const card = (id, title, n, sub) => '<a class="pcard' + (S.postFocus === id ? " on" : "") + '" href="#post-' + id + '"><span>' + title + "</span><b>" + n + "</b><small>" + sub + "</small></a>";
+  let h = '<section class="poststep"><div class="post-sum">' +
+    card("bills", "Purchase bills", bills.length, bills.length ? INR.format(billAmt) : "nothing approved") +
+    card("bank", "Bank lines", bankOn ? ready.length : "\u2026", bankOn ? (st ? esc(st.name || "current statement") : "no statement open") : "loading") +
+    card("sales", "Sales invoices", S.sales && S.sales.cid === co.id ? sales.length : "\u2014", "posted from the Sales list") + "</div>";
+  h += '<p class="note" style="margin:0 0 16px">Every entry is checked against Tally before it goes, and read back after. Nothing is posted twice.</p>';
+  h += '<section class="psec" id="post-bills"><h3>Purchase bills</h3>' + viewExport() + "</section>";
+  h += '<section class="psec" id="post-bank"><h3>Bank lines</h3>';
+  if (!bankOn) h += '<p class="note">Loading the bank statements\u2026</p>';
+  else if (!st) h += '<p class="note">No bank statement yet. <button class="linkbtn" data-dtype="bank" data-gstep="collect">Upload one</button>.</p>';
+  else {
+    h += (S.bank.postReport ? bankReportHtml() : "") +
+      '<div class="row" style="align-items:center;gap:12px"><span><b>' + ready.length + "</b> line" + (ready.length === 1 ? "" : "s") + " ready in " + esc(st.name || "this statement") + "</span>" +
+      (ready.length && Bridge.on() && Bridge.up() ? '<button class="btn primary" data-act="bankPost">Post ' + ready.length + " bank line" + (ready.length === 1 ? "" : "s") + "</button>" : "") +
+      '<button class="btn small" data-act="toBankReady">See the lines</button>' +
+      (S.bank.stmts.length > 1 ? '<span class="note">' + S.bank.stmts.length + " statements: choose another in the bank tab</span>" : "") + "</div>";
+  }
+  h += "</section>";
+  h += '<section class="psec" id="post-sales"><h3>Sales invoices</h3><p class="note">Sales invoices are posted from the list on the Sales tab.</p><button class="btn small" data-dtype="sales">Open sales</button></section>';
+  return h + "</section>";
+}
+function bankReportHtml(){ return S.bank.postReport ? postReportHtml(S.bank.postReport) : ""; }
+/* ---------- Done: what went to Tally for this client, and taking an entry back ---------- */
+function viewDoneStep(){
+  const v = Object.values(D().entries);
+  const posted = v.filter(e => e.exportedAt).length, approved = v.filter(e => e.status === "approved").length;
+  return '<section class="poststep"><div class="post-sum">' +
+    '<div class="pcard"><span>Bills posted</span><b>' + posted + "</b><small>" + approved + " approved in all</small></div>" +
+    '<div class="pcard"><span>Bank lines posted</span><b>' + (S.bank && S.bank.cid === S.coId ? S.bank.rows.filter(r => r.state === "sent").length : "\u2014") + "</b><small>in the open statement</small></div>" +
+    '</div><div class="row" style="margin:0 0 14px;gap:10px"><button class="btn small" data-act="toBillsApproved">Approved bills</button><button class="btn small" data-act="toBankDone">Bank lines done</button></div>' +
+    viewPostLog() + "</section>";
+}
+/* ---------- Client setup: four tabs, out of the daily path ---------- */
+const SETUP_TABS = [["settings", "Company and Tally"], ["bankset", "Bank accounts"], ["bankrules", "Bank rules"], ["deductees", "Suppliers and TDS"]];
+function isSetupTab(t){ return SETUP_TABS.some(x => x[0] === t); }
+function viewBankSetup(which){
+  const co = CO();
+  if (!S.bank || S.bank.cid !== co.id || S.bank.loading){
+    if (!S.bank || S.bank.cid !== co.id) loadBank(co.id).then(() => render());
+    return '<p class="note">Loading this client\u2019s bank details\u2026</p>';
+  }
+  return which === "rules" ? viewRulesPanel() : '<div class="setup-inline">' + bankSettingsHtml() + "</div>";
+}
+
 /* ---------- Collect: everything that arrives for this client ---------- */
 function viewCollect(){
   const t = docType();
@@ -10550,14 +10630,14 @@ document.addEventListener("click", ev => {
     Bridge.refresh().then(() => { toast(port ? "TDS Desk now uses only the Tally on port " + port + "." : "TDS Desk picks your Tally automatically."); bridgeTick(false); render(); });
     return;
   }
-  if (S.view === "company" && S.tab === "bank" && bankClick(t)) return;
+  if (S.view === "company" && (S.tab === "bank" || (S.tab === "export" && S.bank && S.bank.cid === S.coId)) && bankClick(t)) return;   // bank buttons also work on the Post step
   if (S.view === "company" && S.tab === "sales" && salesClick(t)) return;
   if (t.id === "modal"){ if (ev.target.id === "modal") closeSwitcher(); return; }
   if (t.dataset.open){ openCompany(t.dataset.open); return; }
   if (t.dataset.nav){ closeSwitcher(); S.view = "home"; S.homeTab = t.dataset.nav; S.step = null; S.addingCo = false; S.arm = null; if (t.dataset.nav === "rules") S.settingsTab = null; render(); window.scrollTo(0, 0); return; }
   if (t.dataset.step){ goStep(t.dataset.step); return; }
   if (t.dataset.dtype){
-    const step = curStep(), type = t.dataset.dtype;
+    const step = t.dataset.gstep || curStep(), type = t.dataset.dtype;
     if (type === "bank" && (!S.bank || S.bank.cid !== S.coId)) loadBank(S.coId).then(() => { if (S.pendingBankFilter && S.bank){ S.bank.filter = S.pendingBankFilter; S.pendingBankFilter = null; } render(); });
     goStep(step === "post" && type === "sales" ? "review" : step, type);
     return;
@@ -10666,7 +10746,10 @@ document.addEventListener("click", ev => {
       break;
     }
     case "dropKeyHide": S.newDropKey = null; render(); break;
-    case "setup": S.step = null; S.tab = ["settings", "deductees"].includes(S.tab) ? "invoices" : "settings"; render(); break;
+    case "setup": S.step = null; S.tab = isSetupTab(S.tab) ? "invoices" : "settings"; render(); break;
+    case "toBankReady": S.tab = "bank"; if (S.bank) S.bank.filter = "ready"; render(); break;
+    case "toBankDone": S.tab = "bank"; if (S.bank) S.bank.filter = "done"; render(); break;
+    case "toBillsApproved": S.tab = "invoices"; S.filter = "approved"; S.selected = null; render(); break;
     case "collectBills": pickMode = "company"; document.getElementById("fileIn").click(); break;
     case "signOutNow": {
       askConfirm({title: "Sign out of TDS Desk?", ok: "Sign out", body: '<p class="note">You will need your email and password to come back in. Work already synced stays in your firm account.</p>'}).then(a => {
