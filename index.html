@@ -638,7 +638,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 83 (background sync and Tally checks keep your filters and place)";
+const APP_VERSION = "22 Sep 2026 · build 84 (bills kept in the browser database; switching clients never deletes bank data in the cloud)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -728,12 +728,46 @@ function CO(cid){ return S.companies[cid || S.coId]; }
 /*   companies/<cid>/entries/<eid>    invoices of that client         */
 /*   inbox/<id>                       uploads not yet matched         */
 /* ------------------------------------------------------------------ */
+const IDBStore = {
+  dbp: null,
+  open(){
+    if (this.dbp) return this.dbp;
+    this.dbp = new Promise(ok => {
+      let done = false; const fin = v => { if (!done){ done = true; ok(v); } };
+      try {
+        const r = indexedDB.open("tdsdesk-work", 1);
+        r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("docs")) r.result.createObjectStore("docs"); };
+        r.onsuccess = () => fin(r.result); r.onerror = () => fin(null); r.onblocked = () => fin(null);
+      } catch (e){ fin(null); }
+      setTimeout(() => fin(null), 5000);
+    });
+    return this.dbp;
+  },
+  async get(key){ const db = await this.open(); return new Promise((ok, no) => { const q = db.transaction("docs").objectStore("docs").get(key); q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); }); },
+  async prefix(p){
+    const db = await this.open();
+    return new Promise((ok, no) => {
+      const out = [], q = db.transaction("docs").objectStore("docs").openCursor(IDBKeyRange.bound(p, p + "\uffff"));
+      q.onsuccess = () => { const c = q.result; if (c){ out.push([c.key, c.value]); c.continue(); } else ok(out); };
+      q.onerror = () => no(q.error);
+    });
+  },
+  async write(pairs){
+    const db = await this.open();
+    return new Promise((ok, no) => {
+      const tx = db.transaction("docs", "readwrite"), st = tx.objectStore("docs");
+      pairs.forEach(([k, v]) => { if (v == null) st.delete(k); else st.put(v, k); });
+      tx.oncomplete = () => ok(); tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error || {name: "AbortError"});
+    });
+  }
+};
 const Store = {
   db:null, chains:{}, lsTimer:null,
   async init(){
     let db = null;
     try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch(e){ db = null; }
     if (db){ this.db = db; S.storeKind = "db"; return; }
+    try { if (typeof indexedDB !== "undefined" && await IDBStore.open()){ S.storeKind = "idb"; return; } } catch (e){}
     try { localStorage.setItem("tdsdesk:probe", "1"); localStorage.removeItem("tdsdesk:probe"); S.storeKind = "local"; }
     catch(e){ S.storeKind = "memory"; }
   },
@@ -748,6 +782,15 @@ const Store = {
       cos.docs.forEach(d => { S.companies[d.id] = fixCompany(clone(d.data())); });
       inbox.docs.forEach(d => { S.inbox[d.id] = clone(d.data()); });
       if (!cos.docs.length) await this.migrateDb();
+    } else if (S.storeKind === "idb"){
+      const firm = await IDBStore.get("config/firm");
+      const cos = (await IDBStore.prefix("companies/")).filter(([k]) => k.split("/").length === 2);
+      if (!firm && !cos.length && (localStorage.getItem("tdsdesk:v2") || localStorage.getItem("tdsdesk:v1"))){ await this.moveFromLocal(); return; }
+      S.firm = Object.assign(clone(DEFAULT_FIRM), firm || {});
+      cos.forEach(([k, c]) => { S.companies[c.id || k.split("/")[1]] = fixCompany(c); });
+      (await IDBStore.prefix("inbox/")).forEach(([k, i]) => { S.inbox[i.id || k.split("/")[1]] = i; });
+      // the old copy is kept for a week after a move, then removed
+      try { const m = JSON.parse(localStorage.getItem("tdsdesk:v2:moved") || "null"); if (m && Date.now() - new Date(m.at).getTime() > 7 * 86400000){ localStorage.removeItem("tdsdesk:v2"); localStorage.removeItem("tdsdesk:v1"); localStorage.removeItem("tdsdesk:v2:moved"); } } catch (e){}
     } else if (S.storeKind === "local"){
       let v2 = null;
       try { v2 = JSON.parse(localStorage.getItem("tdsdesk:v2") || "null"); } catch(e){ v2 = null; }
@@ -767,6 +810,42 @@ const Store = {
       }
     } else {
       S.firm = clone(DEFAULT_FIRM);
+    }
+  },
+  // Move everything from the browser's small storage into its database, check it all arrived, and keep the old copy a week.
+  async moveFromLocal(){
+    toast("Moving your saved work to this browser\u2019s database\u2026");
+    let v2 = null;
+    try { v2 = JSON.parse(localStorage.getItem("tdsdesk:v2") || "null"); } catch (e){ v2 = null; }
+    if (v2){
+      S.firm = Object.assign(clone(DEFAULT_FIRM), v2.firm || {});
+      Object.values(v2.companies || {}).forEach(c => { S.companies[c.id] = fixCompany(c); });
+      S.inbox = v2.inbox || {};
+      Object.entries(v2.data || {}).forEach(([cid, d]) => { S.data[cid] = {parties: d.parties || {}, entries: d.entries || {}, loaded: true}; });
+    } else {
+      S.firm = clone(DEFAULT_FIRM);
+      let v1 = null;
+      try { v1 = JSON.parse(localStorage.getItem("tdsdesk:v1") || "null"); } catch (e){ v1 = null; }
+      if (v1) this.adoptLegacy(v1.settings || {}, v1.parties || {}, v1.entries || {});
+    }
+    const pairs = [["config/firm", clone(S.firm)]];
+    Object.values(S.companies).forEach(c => pairs.push(["companies/" + c.id, clone(c)]));
+    Object.values(S.inbox || {}).forEach(i => pairs.push(["inbox/" + i.id, clone(i)]));
+    let bills = 0;
+    Object.entries(S.data).forEach(([cid, d]) => {
+      Object.values(d.parties || {}).forEach(pt => pairs.push(["companies/" + cid + "/parties/" + pt.id, clone(pt)]));
+      Object.values(d.entries || {}).forEach(e => { pairs.push(["companies/" + cid + "/entries/" + e.id, clone(e)]); bills++; });
+    });
+    try {
+      await IDBStore.write(pairs);
+      const back = (await IDBStore.prefix("companies/")).filter(([k]) => /\/entries\//.test(k)).length;
+      if (back < bills) throw new Error("only " + back + " of " + bills + " bills arrived");
+      localStorage.setItem("tdsdesk:v2:moved", JSON.stringify({at: new Date().toISOString(), bills, clients: Object.keys(S.companies).length}));
+      toast("Moved " + bills + " bill" + (bills === 1 ? "" : "s") + " and " + Object.keys(S.companies).length + " client" + (Object.keys(S.companies).length === 1 ? "" : "s") + " to this browser\u2019s database.");
+    } catch (e){
+      // could not move: carry on with the old storage, nothing lost
+      S.storeKind = "local";
+      toast("Your work stays in the older storage for now (" + (e.message || e.name || "move failed") + ").");
     }
   },
   // The first version kept one company's data at the top level. Move it into a client.
@@ -809,6 +888,18 @@ const Store = {
   },
   async loadCompany(cid){
     if (S.data[cid] && S.data[cid].loaded) return;
+    if (S.storeKind === "idb"){
+      const base = "companies/" + cid;
+      const [ps, es] = await Promise.all([IDBStore.prefix(base + "/parties/"), IDBStore.prefix(base + "/entries/")]);
+      const d = {parties: {}, entries: {}, loaded: true};
+      ps.forEach(([k, v]) => { d.parties[v.id || k.split("/").pop()] = v; });
+      es.forEach(([k, v]) => { d.entries[v.id || k.split("/").pop()] = v; });
+      // anything already added in this session (for example by the sync) stays
+      const cur = S.data[cid];
+      if (cur){ Object.assign(d.parties, cur.parties || {}); Object.assign(d.entries, cur.entries || {}); }
+      S.data[cid] = d;
+      return;
+    }
     if (S.storeKind !== "db"){ S.data[cid] = S.data[cid] || {parties:{}, entries:{}, loaded:true}; return; }
     const base = "companies/" + cid;
     const [ps, es] = await Promise.all([
@@ -831,6 +922,13 @@ const Store = {
         toast(e && e.code === "quota_exceeded"
           ? "Storage is full. Download the register, then clear sent invoices in Send to Tally."
           : "A change could not be saved. Check your connection and try again.");
+      });
+    } else if (S.storeKind === "idb"){
+      // each record is written on its own, in the background, in order: nothing waits, nothing is rewritten in full
+      const body = obj ? clone(obj) : null;
+      this.chains[path] = (this.chains[path] || Promise.resolve()).then(() => IDBStore.write([[path, body]])).catch(e => {
+        this.failed = true;
+        toast(e && /quota/i.test(e.name || e.message || "") ? "This browser\u2019s storage is full. Download the register, then clear sent invoices." : "A change could not be saved on this computer. Reload the page and try again.");
       });
     } else if (S.storeKind === "local"){
       clearTimeout(this.lsTimer);
@@ -4070,7 +4168,7 @@ function render(){
     return;
   }
   const banner = creditBanner() + (S.storeKind === "db" || (Cloud.on() && Cloud.st && !Cloud.st.error) ? "" :
-    '<p class="banner">' + (S.storeKind === "local" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
+    '<p class="banner">' + (S.storeKind === "local" || S.storeKind === "idb" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
   if (S.view === "company" && CO() && !S.loadingCo && S.tab === "export"){
     body = viewPostStep();
@@ -5855,6 +5953,7 @@ let knownLedgersCache = {key: "", map: null};
 // Only real Tally ledgers (the imported list) and ledgers created here that are waiting for Tally
 function knownLedgers(){
   const b = B();
+  if (!b || !b.ledgers){ const m = new Map(); m.norm = new Map(); return m; }   // no client's ledger list is loaded yet
   const ck = [b.cid, b.ledgers.importedAt, b.ledgers.list.length, b.newLed.length, b.newLed.map(l => l.name).join("|").length].join("#");
   if (knownLedgersCache.key === ck && knownLedgersCache.map) return knownLedgersCache.map;
   const set = new Map();
@@ -10081,7 +10180,22 @@ function cloudChanges(){
   });
   const owned = new Set(snap.map(r => r.kind).concat(["firm", "client", "entry", "party", "unsorted", "bank_meta", "bank_stmt", "bank_rows", "sales", "sales_cfg"]));
   owned.delete("inbox");
-  const gone = Object.keys(marks).filter(k => !(k in seen) && marks[k] !== "gone" && owned.has(k.split("|")[0])).map(k => {
+  // something counts as deleted only if what holds it is open here and it is really gone:
+  // a client's bills when that client is loaded, its bank data when its bank is open, its sales when its sales are open
+  const b = S.bank && !S.bank.loading ? S.bank : null, sl = S.sales && !S.sales.loading ? S.sales : null;
+  const judgeable = k => {
+    const [kind, cid, ...rest] = k.split("|"), id = rest.join("|");
+    if (kind === "entry" || kind === "party") return !!(S.data[cid] && S.data[cid].loaded);
+    if (kind === "bank_meta" || kind === "bank_stmt") return !!(b && b.cid === cid);
+    if (kind === "bank_rows"){
+      if (!b || b.cid !== cid) return false;
+      const sid = id.split(":")[1];
+      return sid === b.cur || !b.stmts.some(st => st.id === sid);   // the open statement, or one that was deleted
+    }
+    if (kind === "sales" || kind === "sales_cfg") return !!(sl && sl.cid === cid);
+    return true;
+  };
+  const gone = Object.keys(marks).filter(k => !(k in seen) && marks[k] !== "gone" && owned.has(k.split("|")[0]) && judgeable(k)).map(k => {
     const bits = k.split("|");
     return {kind: bits[0], client_id: bits[1] || "", id: bits.slice(2).join("|"), data: {}, deleted: true, hash: "gone"};
   });
@@ -10154,6 +10268,7 @@ async function cloudApply(rows){
       else { S.companies[r.id] = fixCompany(clone(r.data)); Store.saveCompany(S.companies[r.id]); }
     }
     else if (r.kind === "entry" || r.kind === "party"){
+      if (!S.data[cid] || !S.data[cid].loaded){ try { await Store.loadCompany(cid); } catch (e){} }
       if (!S.data[cid]) S.data[cid] = {parties: {}, entries: {}, loaded: true};
       const bag = r.kind === "entry" ? S.data[cid].entries : S.data[cid].parties;
       if (r.deleted){ if (r.kind === "entry" && bag[r.id] && bag[r.id].fileHash) unregisterHash(cid, bag[r.id].fileHash); delete bag[r.id]; Store.put("companies/" + cid + "/" + (r.kind === "entry" ? "entries/" : "parties/") + r.id, null); }
