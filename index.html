@@ -383,6 +383,16 @@ th.n .colh{flex-direction:row-reverse}
 .cp-quick{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .cp-chip{border:1px solid var(--rule);background:var(--paper);border-radius:14px;padding:5px 10px;font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink)}
 .cp-chip:hover{border-color:var(--ledger);color:var(--ledger)}
+.busycard{display:flex;align-items:center;gap:14px;margin:0 0 12px;padding:12px 16px;border:1px solid var(--ledger);border-radius:10px;background:var(--ledger-soft)}
+.busytext{flex:1;display:flex;flex-direction:column;gap:3px;min-width:0}
+.busytext b{font-size:14.5px}
+.busytext .note{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.busyn{font-size:13px;font-weight:600;color:var(--ledger);font-variant-numeric:tabular-nums}
+.busybar{height:5px;border-radius:3px;background:#D7E7DD;overflow:hidden;margin-top:3px}
+.busybar i{display:block;height:100%;background:var(--ledger);transition:width .3s ease}
+.spinner{width:22px;height:22px;border-radius:50%;border:3px solid #C3DCCD;border-top-color:var(--ledger);animation:spin .8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){ .spinner{animation-duration:2.4s} }
 .chipbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px}
 .fchip{display:inline-flex;align-items:center;border:1px solid #BFD8CA;background:var(--ledger-soft);border-radius:14px;overflow:hidden}
 .fchip-l{border:0;background:transparent;padding:5px 4px 5px 10px;font:inherit;font-size:12.5px;color:var(--ledger);cursor:pointer}
@@ -695,7 +705,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "22 Sep 2026 · build 90 (repair statement lines page by page; the same column filters in Sales)";
+const APP_VERSION = "22 Sep 2026 · build 91 (it shows what it is working on, with a spinner and progress)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -3968,6 +3978,26 @@ function freeRate(co){
   const rc = (co && co.readCounts) || {}, n = (rc.free || 0) + (rc.google || 0) + (rc.claude || 0);
   return n ? {n, pct: Math.round(100 * (rc.free || 0) / n), google: rc.google || 0, claude: rc.claude || 0, free: rc.free || 0} : null;
 }
+// "Working on it": a spinner, what it is doing now, and how far it has got
+function busyCard(title, detail, done, total){
+  const pct = total ? Math.round(Math.min(1, done / total) * 100) : null;
+  const m = pct === null && detail ? String(detail).match(/page (\d+) of (\d+)/i) : null;
+  const p2 = m ? Math.round(m[1] / m[2] * 100) : pct;
+  return '<div class="busycard" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span>' +
+    '<div class="busytext"><b>' + esc(title) + "</b>" + (detail ? '<span class="note">' + esc(detail) + "</span>" : "") +
+    (p2 === null ? "" : '<div class="busybar"><i style="width:' + p2 + '%"></i></div>') + "</div>" +
+    (total ? '<span class="busyn">' + done + " / " + total + "</span>" : "") + "</div>";
+}
+// what the reading of this client's bills is doing right now
+function billsBusyCard(){
+  const mine = (S.jobs || []).filter(j => j.cid === S.coId || j.target === S.coId || j.target === "auto");
+  const busy = mine.filter(j => ["waiting", "checking", "reading"].includes(j.status));
+  if (!busy.length) return "";
+  const now = busy.find(j => j.status === "reading") || busy[0];
+  const done = mine.length - busy.length;
+  const stage = now.msg || ({waiting: "waiting its turn", checking: "checking whether it was uploaded before", reading: "reading it"})[now.status] || "";
+  return busyCard("Reading " + (busy.length === 1 ? "a bill" : busy.length + " bills") + "\u2026", now.name + " \u00b7 " + stage, done, mine.length);
+}
 function viewJobs(filterFn){
   const jobs = S.jobs.filter(filterFn);
   if (!jobs.length) return "";
@@ -4492,7 +4522,7 @@ function viewCollect(){
       '<div class="note">Excel, CSV or PDF from any bank. The balances are checked, and the statement is filed under the right account.</div></div><input type="file" id="bankIn" accept=".xls,.xlsx,.csv,.pdf,.txt" multiple class="hidden"></section>'
     : '<section class="collect-card"><h3>Upload purchase bills</h3>' + uploadBlock(CO()) + "</section>";
   const mine = viewJobs(j => j.target === S.coId || j.cid === S.coId || j.target === "auto");
-  return '<div class="collect">' + (inbox || '<p class="note" style="margin:0 0 12px">Nothing waiting in the inbox for ' + esc(CO().name) + ".</p>") + card +
+  return billsBusyCard() + '<div class="collect">' + (inbox || '<p class="note" style="margin:0 0 12px">Nothing waiting in the inbox for ' + esc(CO().name) + ".</p>") + card +
     (mine ? '<section class="collect-card">' + mine + '<button class="btn small" data-step="review">Review them</button></section>' : "") + "</div>";
 }
 /* ---------- Today: what needs doing, across every client ---------- */
@@ -4812,12 +4842,14 @@ function revFilterRow(){
 }
 function viewReviewTable(){
   const co = CO(), all = draftRows(), rows = revFiltered();
+  const busyTop = billsBusyCard();
   const sel = S.revSel = S.revSel || new Set();
   const nSel = rows.filter(r => sel.has(r.e.id)).length;
   let h = '<div class="bk"><div class="bk-head"><div class="bk-id"><h2 class="bk-title">Review ' + rows.length + " uploaded bill" + (rows.length === 1 ? "" : "s") + '</h2><div class="bk-sub">' + esc(co.name) + " \u00b7 tick the ones to book TDS on, then approve together</div></div>" +
     '<dl class="bk-figs"><div><dt>Bills</dt><dd>' + rows.length + '</dd></div><div><dt>Value</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.e.x.total), 0))) + '</dd></div><div><dt>TDS</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.c.tds), 0))) + "</dd></div></dl>" +
     '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button></div></div>';
   if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
+  h = busyTop + h;
   h += '<div class="revfilter"><input type="search" id="revq" data-fk="revq" value="' + esc(S.revQuery || "") + '" placeholder="Filter by supplier, bill no., GSTIN, ledger, payment type or amount" aria-label="Filter the bills">' +
     (S.revQuery && !revColOn() ? '<span class="note">' + rows.length + " of " + all.length + " shown</span>" : "") + "</div>" + colChipBar("rev", rows.length, all.length + " bills");
   h += '<div class="bk-tablewrap"><table class="bk-table revtbl"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th>' + colHead("rev", "date", "Date", "dt") + colHead("rev", "sup", "Supplier") + colHead("rev", "no", "Bill no.") + colHead("rev", "val", "Value", "n") + colHead("rev", "nature", "Payment type") + colHead("rev", "tds", "TDS", "ck") + '<th class="n">TDS</th>' + colHead("rev", "look", "This year vs limit") + '<th class="ac"></th></tr></thead><tbody>';
@@ -5068,8 +5100,8 @@ function viewInvoices(){
       '</span><span class="m">' + readBadge(e.readMode) + " " + esc([e.x.invoiceNo, e.x.invoiceDate ? fmtDate(e.x.invoiceDate) : ""].filter(Boolean).join(", ") || e.fileName) + '</span><span class="t">' + tag + "</span></button></li>";
   }).join("");
   const emptyMsg = S.filter === "draft" ? "No drafts for " + co.name + ". Upload invoices above." : S.filter === "approved" ? "Nothing approved yet." : S.filter === "duplicate" ? "No duplicates held." : "Nothing marked as no entry.";
-  return docqPanel(S.coId) + '<div class="desk"><div>' +
-    (S.jobs.some(j => ["waiting", "checking", "reading"].includes(j.status)) ? '<p class="note" style="margin:0 0 8px">Reading\u2026</p>' : "") +
+  return billsBusyCard() + docqPanel(S.coId) + '<div class="desk"><div>' +
+
     (Object.values(d.entries).filter(e => e.status === "draft").length > 1 ? '<div class="row" style="margin:8px 0 0"><button class="btn small" data-act="revTable">Review all ' + Object.values(d.entries).filter(e => e.status === "draft").length + ' in a table</button></div>' : "") +
     '<div class="filters">' + f("draft", "To review") + f("approved", "Approved") + f("rejected", "No entry") + (cnt("duplicate") || S.filter === "duplicate" ? f("duplicate", "Duplicates") : "") + "</div>" +
     (items ? '<ul class="queue">' + items + "</ul>" : '<p class="empty">' + esc(emptyMsg) + "</p>") +
@@ -6117,7 +6149,7 @@ async function claudeStatement(file, progress, onlyPages){
   const rows = [], metaLines = [];
   for (let i = 0; i < canvases.length; i++){
     const pageNo = onlyPages && onlyPages.length ? onlyPages[i] : i + 1;
-    if (progress) progress("Claude is reading page " + pageNo + "\u2026");
+    if (progress) progress("Claude is reading page " + (i + 1) + " of " + canvases.length + " (page " + pageNo + " of the statement)\u2026");
     if (!(await charge("bills", 1, file.name, "Statement page read by Claude"))) throw {code: "no_credit"};
     const img = await imgBlob(canvases[i], "page");
     const prompt = "This is page " + (i + 1) + " of a bank statement. List every transaction row in the table, in the order printed.\n" +
@@ -7742,7 +7774,7 @@ function viewBank(){
   let h = "";
   h += '<div class="bk">';
   if (BankDB.mode === "memory only" || BankDB.lost) h += '<div class="bk-alert bad">This browser is not keeping bank statements' + (BankDB.lost ? " (storage is full)" : "") + ". Create the Tally file before closing, or use Chrome.</div>";
-  if (b.busy) h += '<div class="bk-alert">' + esc(b.busy) + "</div>";
+  if (b.busy) h += busyCard("Working on the statement\u2026", b.busy, 0, 0);
   if (b.moved) h += '<div class="bk-alert"><b>' + esc(b.moved.file) + "</b> is a statement of " + esc(b.moved.name) + " (account \u00b7\u00b7" + esc(b.moved.last4) + "), so it was filed there. " +
     '<button class="linkbtn" data-act="bankOpenMoved">Open ' + esc(b.moved.name) + '</button> <button class="linkbtn" data-act="bankDismissMoved">Dismiss</button></div>';
   if (b.postReport) h += postReportHtml(b.postReport);
@@ -10105,7 +10137,7 @@ function viewSales(){
   const sum = k => r2(live.reduce((a, v) => a + num(v.x[k]), 0));
   ensureFileInputs();
   let h = '<div class="bk sl">';
-  if (s.busy) h += '<div class="bk-alert">' + esc(s.busy) + "</div>";
+  if (s.busy) h += busyCard("Working on sales\u2026", s.busy, 0, 0);
   if (!hasLedgerList()){
     if (bridgeLive(co)) h += '<div class="bk-setup"><div><b>Loading ledgers from Tally\u2026</b></div></div>';
     else h += '<div class="bk-setup"><div><b>Tally ledgers are needed for Sales vouchers</b><div class="note">' + (Bridge.on() ? "Open " + esc(Bridge.tallyName(co)) + " in TallyPrime, or import the ledger list." : "Import the ledger list (Tally: Display More Reports \u2192 List of Accounts \u2192 Export), or connect the Tally Bridge.") + '</div></div><button class="btn small" data-act="ledPick">Import ledger list</button></div>';
