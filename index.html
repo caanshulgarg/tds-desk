@@ -751,7 +751,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "23 Sep 2026 · build 95 (Transactions: every bill, sale and bank line in one register)";
+const APP_VERSION = "23 Sep 2026 · build 96 (Transactions has the same column filters)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -4677,10 +4677,27 @@ function txnRowsBank(){
       total: num(r.debit) || num(r.credit), dr: num(r.debit), cr: num(r.credit), cls, label, file: st.fileName || "", hasFile: false, r};
   }).sort((a, b2) => String(b2.date).localeCompare(String(a.date)));
 }
+function txnF(){ S.txnF = S.txnF || {}; S.txnF[txnTab()] = S.txnF[txnTab()] || {}; return S.txnF[txnTab()]; }
+function txnColPass(r){
+  const f = txnF();
+  if (f.from && (r.date || "") < f.from) return false;
+  if (f.to && (r.date || "") > f.to) return false;
+  if (f.vchs && f.vchs.length && !f.vchs.includes(r.vch)) return false;
+  if (f.no && !String(r.no || "").toLowerCase().includes(f.no.toLowerCase())) return false;
+  if (f.party && !String(r.party || "").toLowerCase().includes(f.party.toLowerCase())) return false;
+  if (f.parties && f.parties.length && !f.parties.includes(r.party)) return false;
+  if (f.min && num(r.total) < num(f.min)) return false;
+  if (f.max && num(r.total) > num(f.max)) return false;
+  if (f.states && f.states.length && !f.states.includes(r.label)) return false;
+  if (f.doc === "yes" && !r.file) return false;
+  if (f.doc === "no" && r.file) return false;
+  return true;
+}
+function txnColOn(){ const f = txnF(); return Object.keys(f).some(k => Array.isArray(f[k]) ? f[k].length : f[k]); }
 function txnFiltered(rows){
   const q = String(S.txnQ || "").trim().toLowerCase();
   const st = S.txnStatus || "";
-  return rows.filter(r => (!q || [r.no, r.party, r.file, r.vch, String(r.total)].join(" ").toLowerCase().includes(q)) && (!st || r.cls === st));
+  return rows.filter(r => txnColPass(r) && (!q || [r.no, r.party, r.file, r.vch, String(r.total)].join(" ").toLowerCase().includes(q)) && (!st || r.cls === st));
 }
 function viewTransactions(){
   const co = CO();
@@ -4700,16 +4717,18 @@ function viewTransactions(){
     [["ok", "In Tally"], ["warn", "Ready or held"], ["no", "Not posted"], ["bad", "Refused by Tally"]].map(([v, l]) => '<option value="' + v + '"' + (S.txnStatus === v ? " selected" : "") + ">" + l + "</option>").join("") + "</select>" +
     '<span class="note">' + rows.length + " of " + rowsAll.length + "</span>" +
     '<button class="btn small" data-act="txnCsv">Download as CSV</button></div>';
-  h += '<div class="bk-tablewrap"><table class="bk-table txntbl"><thead><tr><th class="n">S. no.</th><th class="dt">Date</th><th>Voucher</th><th>' + (tab === "bank" ? "Reference" : "Invoice no.") + "</th><th>" + (tab === "sales" ? "Customer" : "Party") + "</th>" +
+  h += colChipBar("txn", rows.length, rowsAll.length + (tab === "bank" ? " lines" : tab === "sales" ? " invoices" : " bills"));
+  h += '<div class="bk-tablewrap"><table class="bk-table txntbl"><thead><tr><th class="n">S. no.</th>' +
+    colHead("txn", "date", "Date", "dt") + colHead("txn", "vch", "Voucher") + colHead("txn", "no", tab === "bank" ? "Reference" : "Invoice no.") + colHead("txn", "party", tab === "sales" ? "Customer" : "Party") +
     (tab === "bank" ? '<th class="n">Withdrawal</th><th class="n">Deposit</th>' : '<th class="n">Taxable</th><th class="n">GST</th>') +
-    '<th class="n">' + (tab === "bank" ? "Amount" : "Invoice value") + "</th><th>In Tally</th><th>Document</th><th class=\"ac\"></th></tr></thead><tbody>";
+    colHead("txn", "val", tab === "bank" ? "Amount" : "Invoice value", "n") + colHead("txn", "status", "In Tally") + colHead("txn", "doc", "Document") + '<th class="ac"></th></tr></thead><tbody>';
   h += rows.map((r, i) => "<tr><td class=\"n\">" + (i + 1) + '</td><td>' + (r.date ? fmtDate(r.date) : "\u2014") + (r.up ? '<div class="nr">up ' + fmtDate(r.up) + "</div>" : "") + "</td>" +
     "<td>" + esc(r.vch) + "</td><td>" + esc(r.no || "\u2014") + "</td><td>" + esc(r.party) + "</td>" +
     (tab === "bank" ? '<td class="n">' + money(r.dr) + '</td><td class="n">' + money(r.cr) + "</td>" : '<td class="n">' + money(r.taxable) + '</td><td class="n">' + money(r.gst) + "</td>") +
     '<td class="n">' + money(r.total) + '</td><td><span class="tag ' + r.cls + '">' + esc(r.label) + "</span></td>" +
     "<td>" + (r.file ? (r.hasFile ? '<button class="linkbtn" data-txnopen="' + r.id + '">' + esc(r.file.slice(0, 22)) + "</button>" : '<span class="note">' + esc(r.file.slice(0, 22)) + "</span>") : "\u2014") + "</td>" +
     '<td class="ac"><button class="btn small" data-txngo="' + r.id + '" data-txnkind="' + r.kind + '">Open</button></td></tr>').join("");
-  h += "</tbody></table>" + (rows.length ? "" : '<div class="bk-none">' + (S.txnQ || S.txnStatus ? "Nothing matches. " : "Nothing here yet.") + (S.txnQ || S.txnStatus ? '<button class="linkbtn" data-act="txnClear">Clear</button>' : "") + "</div>") + "</div>";
+  h += "</tbody></table>" + (rows.length ? "" : ((S.txnQ || S.txnStatus || txnColOn()) ? noMatchNote("txn") : '<div class="bk-none">Nothing here yet.</div>')) + "</div>";
   return h;
 }
 function txnCsv(){
@@ -8103,6 +8122,9 @@ function colHead(table, key, label, cls){
     '" data-colf="' + key + '" data-colt="' + table + '" aria-label="Filter ' + esc(label) + '" title="Filter ' + esc(label) + '">' + FUNNEL + "</button></span></th>";
 }
 function colActive(t, k){
+  if (t === "txn"){ const f = txnF();
+    return k === "date" ? !!(f.from || f.to) : k === "vch" ? !!(f.vchs && f.vchs.length) : k === "no" ? !!f.no : k === "party" ? !!(f.party || (f.parties && f.parties.length)) :
+      k === "val" ? !!(f.min || f.max) : k === "status" ? !!(f.states && f.states.length) : k === "doc" ? !!f.doc : false; }
   if (t === "sales"){ const f = (SL() || {}).f || {};
     return k === "date" ? !!(f.from || f.to) : k === "no" ? !!f.no : k === "cust" ? !!(f.cust || (f.custs && f.custs.length)) : k === "val" ? !!(f.min || f.max) : k === "led" ? !!(f.leds && f.leds.length) : false; }
   if (t === "bank"){ const b = B() || {}, f = b.f || {};
@@ -8114,6 +8136,13 @@ function colActive(t, k){
 function colValues(t, k){
   const m = new Map();
   const add = v => { if (v) m.set(v, (m.get(v) || 0) + 1); };
+  if (t === "txn"){
+    const rows = txnTab() === "bills" ? txnRowsBills() : txnTab() === "sales" ? (txnRowsSales() || []) : (txnRowsBank() || []);
+    if (k === "vch") rows.forEach(r => add(r.vch));
+    if (k === "party") rows.forEach(r => add(r.party));
+    if (k === "status") rows.forEach(r => add(r.label));
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  }
   if (t === "sales"){ const list = (SL() || {list: []}).list; if (k === "cust") list.forEach(v => add(v.x.customerName)); if (k === "led") list.forEach(v => add(v.customerLedger)); return Array.from(m.entries()).sort((a, b) => b[1] - a[1]); }
   if (t === "bank"){ const rows = B().rows; if (k === "narr") rows.forEach(r => add(r.dec && r.dec.mode)); if (k === "led") rows.forEach(r => add(r.ledger)); }
   else { const rows = draftRows(); if (k === "sup") rows.forEach(r => add(r.e.x.vendorName)); if (k === "nature") rows.forEach(r => add(r.e.natureId)); }
@@ -8122,8 +8151,8 @@ function colValues(t, k){
 const MODE_NAMES = {UPI: "UPI", NEFT: "NEFT", IMPS: "IMPS", RTGS: "RTGS", CHQ: "Cheque", CASH: "Cash deposit", ATM: "Cash withdrawal", NACH: "NACH / ECS", CARD: "Card", CHARGES: "Bank charges", INTEREST: "Interest", TRANSFER: "Transfer", OTHER: "Other"};
 function colPopHtml(){
   const p = S.colPop; if (!p) return "";
-  const bank = p.t === "bank", sales = p.t === "sales", b = bank ? B() : null;
-  const f = bank ? (b.f || {}) : sales ? ((SL() || {}).f || {}) : (S.revF || {});
+  const bank = p.t === "bank", sales = p.t === "sales", txn = p.t === "txn", b = bank ? B() : null;
+  const f = bank ? (b.f || {}) : sales ? ((SL() || {}).f || {}) : txn ? txnF() : (S.revF || {});
   const dateFrom = bank ? b.from : f.from, dateTo = bank ? b.to : f.to;
   const q = String(p.search || "").trim().toLowerCase();
   const list = (values, chosen, name, labeler) => {
@@ -8150,6 +8179,19 @@ function colPopHtml(){
   } else if (bank && p.k === "led"){
     title = "Ledger";
     body = radio("led", f.led, [["", "Any ledger"], ["none", "No ledger yet"], ["set", "Ledger chosen"]]) + '<p class="cp-sub">Or only these ledgers:</p>' + list(colValues("bank", "led"), f.leds, "leds");
+  } else if (txn && p.k === "vch"){
+    title = "Voucher type"; body = list(colValues("txn", "vch"), f.vchs, "vchs");
+  } else if (txn && p.k === "no"){
+    title = "Number"; body = '<input type="text" data-pf="no" data-fk="cp-no" value="' + esc(f.no || "") + '" placeholder="Number has\u2026" class="cp-full">';
+  } else if (txn && p.k === "party"){
+    title = "Party";
+    body = '<input type="text" data-pf="party" data-fk="cp-party" value="' + esc(f.party || "") + '" placeholder="Name has\u2026" class="cp-full"><p class="cp-sub">Or only these:</p>' + list(colValues("txn", "party"), f.parties, "parties");
+  } else if (txn && p.k === "val"){
+    title = "Amount"; body = range("min", "max", f.min, f.max);
+  } else if (txn && p.k === "status"){
+    title = "In Tally"; body = list(colValues("txn", "status"), f.states, "states");
+  } else if (txn && p.k === "doc"){
+    title = "Document"; body = radio("doc", f.doc, [["", "All"], ["yes", "Document attached"], ["no", "No document"]]);
   } else if (sales && p.k === "no"){
     title = "Invoice"; body = '<input type="text" data-pf="no" data-fk="cp-no" value="' + esc(f.no || "") + '" placeholder="Invoice number has\u2026" class="cp-full">';
   } else if (sales && p.k === "cust"){
@@ -8194,12 +8236,16 @@ function colPopApply(clearOnly, keepOpen){
   });
   const keys = {bank: {date: ["from", "to"], narr: ["narr", "narrNot", "modes"], wd: ["wmin", "wmax"], dep: ["dmin", "dmax"], led: ["led", "leds", "ledText"]},
                 sales: {date: ["from", "to"], no: ["no"], cust: ["cust", "custs"], val: ["min", "max"], led: ["leds"]},
+                txn: {date: ["from", "to"], vch: ["vchs"], no: ["no"], party: ["party", "parties"], val: ["min", "max"], status: ["states"], doc: ["doc"]},
                 rev: {date: ["from", "to"], sup: ["sup", "sups"], no: ["no"], val: ["min", "max"], nature: ["natures"], tds: ["tds"], look: ["look"]}}[p.t][p.k];
   if (p.t === "bank"){
     const b = B(); b.f = b.f || {};
     keys.forEach(k => { const v = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); if (k === "from" || k === "to") b[k] = v; else b.f[k] = v; });
     if (b.from && b.to && b.from > b.to){ const x = b.from; b.from = b.to; b.to = x; }
     b.sel.clear();
+  } else if (p.t === "txn"){
+    const f2 = txnF();
+    keys.forEach(k => { f2[k] = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); });
   } else if (p.t === "sales"){
     const sl = SL(); sl.f = sl.f || {};
     keys.forEach(k => { const v = clearOnly ? "" : (vals[k] == null ? "" : vals[k]); if (k === "from" || k === "to") sl.f[k] = v; else sl.f[k] = v; });
@@ -8226,6 +8272,15 @@ function colChips(t){
     if (f.dmin || f.dmax) chips.push(["dep", "Deposit " + rng(f.dmin, f.dmax)]);
     if (f.led) chips.push(["led", f.led === "none" ? "No ledger yet" : "Ledger chosen"]);
     if (f.leds && f.leds.length) chips.push(["led", "Ledger: " + f.leds.slice(0, 2).join(", ") + (f.leds.length > 2 ? " +" + (f.leds.length - 2) : "")]);
+  } else if (t === "txn"){ const f = txnF();
+    if (f.from || f.to) chips.push(["date", "Date " + (f.from && f.to ? d(f.from) + " \u2013 " + d(f.to) : f.from ? "from " + d(f.from) : "to " + d(f.to))]);
+    if (f.vchs && f.vchs.length) chips.push(["vch", "Voucher: " + f.vchs.join(", ")]);
+    if (f.no) chips.push(["no", "Number has \u201c" + f.no + "\u201d"]);
+    if (f.party) chips.push(["party", "Party has \u201c" + f.party + "\u201d"]);
+    if (f.parties && f.parties.length) chips.push(["party", "Party: " + f.parties.slice(0, 2).join(", ") + (f.parties.length > 2 ? " +" + (f.parties.length - 2) : "")]);
+    if (f.min || f.max) chips.push(["val", "Amount " + rng(f.min, f.max)]);
+    if (f.states && f.states.length) chips.push(["status", f.states.join(", ")]);
+    if (f.doc) chips.push(["doc", f.doc === "yes" ? "Document attached" : "No document"]);
   } else if (t === "sales"){ const f = (SL() || {}).f || {};
     if (f.from || f.to) chips.push(["date", "Date " + (f.from && f.to ? d(f.from) + " \u2013 " + d(f.to) : f.from ? "from " + d(f.from) : "to " + d(f.to))]);
     if (f.no) chips.push(["no", "Invoice has \u201c" + f.no + "\u201d"]);
@@ -11910,7 +11965,7 @@ document.addEventListener("click", ev => {
   if (t.closest && t.closest("[data-cpclear]")){ colPopApply(true, S.colAuto); return; }
   if (t.dataset.cpquick){ const [a2, b2] = quickRange(t.dataset.cpquick), pop = document.getElementById("colpop"); if (pop){ pop.querySelector('[data-pf="from"]').value = a2; pop.querySelector('[data-pf="to"]').value = b2; } colPopApply(false, false); return; }   // a quick pick is a whole choice: close
   if (t.dataset.chipx){ S.colPop = {t: t.dataset.colt, k: t.dataset.chipx}; colPopApply(true); return; }
-  if (t.dataset.chipall){ if (t.dataset.chipall === "bank"){ const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); } else if (t.dataset.chipall === "sales"){ const sl = SL(); if (sl){ sl.f = {}; sl.sel.clear(); } } else { S.revF = {}; S.revSel = new Set(); } S.colPop = null; render(); return; }
+  if (t.dataset.chipall){ if (t.dataset.chipall === "bank"){ const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); } else if (t.dataset.chipall === "sales"){ const sl = SL(); if (sl){ sl.f = {}; sl.sel.clear(); } } else if (t.dataset.chipall === "txn"){ S.txnF = S.txnF || {}; S.txnF[txnTab()] = {}; S.txnQ = ""; S.txnStatus = ""; } else { S.revF = {}; S.revSel = new Set(); } S.colPop = null; render(); return; }
   if (t.dataset.billback){ const e = D().entries[t.dataset.billback]; if (e){ const keep = S.tab; undoApproval(e); S.tab = keep; render(); } return; }
   if (t.dataset.billdel){
     const e = D().entries[t.dataset.billdel];
@@ -12201,7 +12256,7 @@ document.addEventListener("click", ev => {
     case "bridgeOff": Bridge.setCfg({key: ""}); clearInterval(bridgeTimer); Bridge.st = {state: "off", sessions: [], open: [], at: Date.now(), error: ""}; render(); break;
     case "billPost": postBillsToTally(); break;
     case "txnCsv": txnCsv(); break;
-    case "txnClear": S.txnQ = ""; S.txnStatus = ""; render(); break;
+    case "txnClear": S.txnQ = ""; S.txnStatus = ""; S.txnF = S.txnF || {}; S.txnF[txnTab()] = {}; render(); break;
     case "tallyPanel": S.tallyPanel = !S.tallyPanel; S.firmMenu = false; render(); break;
     case "tallyPanelClose": S.tallyPanel = false; render(); break;
     case "tallyGuide": S.tallyPanel = false; S.view = "home"; S.homeTab = "tally"; render(); window.scrollTo(0, 0); break;
