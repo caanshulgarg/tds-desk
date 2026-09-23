@@ -11662,7 +11662,7 @@ document.addEventListener("click", ev => {
   if (t.closest && t.closest("[data-cpclose]")){ S.colPop = null; render(); return; }
   if (t.closest && t.closest("[data-cpapply]")){ colPopApply(false); return; }
   if (t.closest && t.closest("[data-cpclear]")){ colPopApply(true, S.colAuto); return; }
-  if (t.dataset.cpquick){ const [a2, b2] = quickRange(t.dataset.cpquick), pop = document.getElementById("colpop"); if (pop){ pop.querySelector('[data-pf="from"]').value = a2; pop.querySelector('[data-pf="to"]').value = b2; } colPopApply(false, S.colAuto); return; }
+  if (t.dataset.cpquick){ const [a2, b2] = quickRange(t.dataset.cpquick), pop = document.getElementById("colpop"); if (pop){ pop.querySelector('[data-pf="from"]').value = a2; pop.querySelector('[data-pf="to"]').value = b2; } colPopApply(false, false); return; }   // a quick pick is a whole choice: close
   if (t.dataset.chipx){ S.colPop = {t: t.dataset.colt, k: t.dataset.chipx}; colPopApply(true); return; }
   if (t.dataset.chipall){ if (t.dataset.chipall === "bank"){ const b = B(); b.from = ""; b.to = ""; b.f = {}; b.sel.clear(); } else if (t.dataset.chipall === "sales"){ const sl = SL(); if (sl){ sl.f = {}; sl.sel.clear(); } } else { S.revF = {}; S.revSel = new Set(); } S.colPop = null; render(); return; }
   if (t.dataset.billback){ const e = D().entries[t.dataset.billback]; if (e){ const keep = S.tab; undoApproval(e); S.tab = keep; render(); } return; }
