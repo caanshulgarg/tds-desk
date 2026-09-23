@@ -751,7 +751,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "23 Sep 2026 · build 98 (documents kept in the firm account: shrunk, uploaded in the background, opened anywhere)";
+const APP_VERSION = "23 Sep 2026 · build 99 (you can see where each document is, and send up the ones left behind)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -941,6 +941,7 @@ const CloudDocs = {
   async run(){
     if (this.busy) return;
     this.busy = true;
+    const tick = setInterval(() => { if (S.view === "company" && ["txn", "invoices"].includes(S.tab)) softRender(); }, 1200);
     while (this.queue.length){
       const job = this.queue[0];
       try {
@@ -960,6 +961,8 @@ const CloudDocs = {
       }
     }
     this.busy = false;
+    clearInterval(tick);
+    if (S.view === "company") softRender();
   },
   // remember where it went, on the record itself, so any computer can open it
   note(job, path, size){
@@ -994,6 +997,28 @@ const CloudDocs = {
     } catch (e){}
   },
   // documents older than the period the firm keeps
+  // documents already on this computer that never went up: after an update, or after being offline
+  async pending(cid){
+    const out = [];
+    const d = S.data[cid];
+    if (!d || !d.loaded) return out;
+    const idx = await FileStore.index(cid);
+    Object.values(d.entries).forEach(e => {
+      if (e.docPath || e.status === "rejected" || e.status === "duplicate") return;
+      if (idx.has(e.id)) out.push({id: e.id, kind: "bill", name: e.fileName || ""});
+    });
+    return out;
+  },
+  async sendPending(cid){
+    const list = await this.pending(cid);
+    if (!list.length){ toast("Every document for this client is already in the firm account."); return; }
+    for (const it of list){
+      const f = await FileStore.get(cid, it.id);
+      if (f) this.add(cid, it.id, f, it.kind);
+    }
+    toast("Sending " + list.length + " document" + (list.length === 1 ? "" : "s") + " to the firm account\u2026");
+    render();
+  },
   async oldOnes(years){
     const cut = new Date(); cut.setFullYear(cut.getFullYear() - num(years || 3));
     const out = [];
@@ -4170,6 +4195,11 @@ function busyCard(title, detail, done, total){
     (total ? '<span class="busyn">' + done + " / " + total + "</span>" : "") + "</div>";
 }
 // what the reading of this client's bills is doing right now
+function docsBusyCard(){
+  const n = CloudDocs.queue.length;
+  if (!n) return "";
+  return busyCard("Saving " + n + " document" + (n === 1 ? "" : "s") + " to the firm account\u2026", "This happens in the background; you can carry on.", 0, 0);
+}
 function billsBusyCard(){
   const mine = (S.jobs || []).filter(j => j.cid === S.coId || j.target === S.coId || j.target === "auto");
   const busy = mine.filter(j => ["waiting", "checking", "reading"].includes(j.status));
@@ -4513,7 +4543,7 @@ function render(){
     '<p class="banner">' + (S.storeKind === "local" || S.storeKind === "idb" ? "Your work is saved in this browser only. Clearing browser data will remove it." : "Your work is not being saved. It will be lost when you close this page.") + "</p>");
   let body;
   if (S.view === "company" && CO() && !S.loadingCo && S.tab === "txn"){
-    body = viewTransactions();
+    body = docsBusyCard() + viewTransactions();
   } else if (S.view === "company" && CO() && !S.loadingCo && S.tab === "dash"){
     body = viewClientDash();
   } else if (S.view === "company" && CO() && !S.loadingCo && S.tab === "clientInbox"){
@@ -4864,7 +4894,10 @@ function viewTransactions(){
     "<td>" + esc(r.vch) + "</td><td>" + esc(r.no || "\u2014") + "</td><td>" + esc(r.party) + "</td>" +
     (tab === "bank" ? '<td class="n">' + money(r.dr) + '</td><td class="n">' + money(r.cr) + "</td>" : '<td class="n">' + money(r.taxable) + '</td><td class="n">' + money(r.gst) + "</td>") +
     '<td class="n">' + money(r.total) + '</td><td><span class="tag ' + r.cls + '">' + esc(r.label) + "</span></td>" +
-    "<td>" + (r.file ? (r.hasFile ? '<button class="linkbtn" data-txnopen="' + (r.kind === "bank" ? "st:" + r.stId : r.kind === "sale" ? "sv:" + r.id : r.id) + '" data-txnpath="' + esc(r.docPath || "") + '" data-txnname="' + esc(r.file) + '" title="Open ' + esc(r.file) + '">\ud83d\udcce ' + esc(r.file.slice(0, 20)) + "</button>" : '<span class="note" title="The file is not on this computer">' + esc(r.file.slice(0, 20)) + "</span>") : "\u2014") + "</td>" +
+    "<td>" + (r.file ? (r.hasFile
+      ? '<button class="linkbtn" data-txnopen="' + (r.kind === "bank" ? "st:" + r.stId : r.kind === "sale" ? "sv:" + r.id : r.id) + '" data-txnpath="' + esc(r.docPath || "") + '" data-txnname="' + esc(r.file) + '" title="Open ' + esc(r.file) + '">\ud83d\udcce ' + esc(r.file.slice(0, 18)) + "</button>" +
+        '<div class="nr">' + (r.docPath ? '<span class="tag ok" title="Anyone in the firm can open it, from any computer">in the firm account</span>' : '<span class="tag" title="It is on this computer only">this computer only</span>') + "</div>"
+      : '<span class="note" title="The file was uploaded before documents were kept, or on another computer">' + esc(r.file.slice(0, 18)) + "</span>") : "\u2014") + "</td>" +
     '<td class="ac"><button class="btn small" data-txngo="' + r.id + '" data-txnkind="' + r.kind + '">Open</button></td></tr>').join("");
   h += "</tbody></table>" + (rows.length ? "" : ((S.txnQ || S.txnStatus || txnColOn()) ? noMatchNote("txn") : '<div class="bk-none">Nothing here yet.</div>')) + "</div>";
   return h;
@@ -4894,6 +4927,10 @@ function viewClientDash(){
     tile("Bills to review", drafts.length, drafts.length ? money(drafts.reduce((a, e) => a + num(e.x.total), 0)) : "nothing waiting", "bills") +
     tile("Ready to post", approved.length, approved.length ? money(approved.reduce((a, e) => a + num(e.x.total), 0)) : "nothing approved", "post") +
     tile("Bank lines to review", bc ? bc.review : "\u2026", bc ? bc.ready + " ready to post" : "opening the bank", "bank") + "</div>";
+  if (CloudDocs.on()){
+    h += '<p class="note" style="margin:-6px 0 14px">Documents are kept in the firm account, so anyone in the firm can open a bill from Transactions on any computer.' +
+      (CloudDocs.queue.length ? " <b>" + CloudDocs.queue.length + " waiting to go up.</b>" : "") + "</p>";
+  }
   h += '<div class="dash-cols">';
   // TDS this year
   const fy = fyOf(null), tds = v.filter(e => e.status !== "rejected" && e.snapshot).reduce((a, e) => a + num(e.snapshot.tds), 0);
@@ -5246,7 +5283,7 @@ function viewReviewTable(){
     '<dl class="bk-figs"><div><dt>Bills</dt><dd>' + rows.length + '</dd></div><div><dt>Value</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.e.x.total), 0))) + '</dd></div><div><dt>TDS</dt><dd>' + INR.format(r2(rows.reduce((a, r) => a + num(r.c.tds), 0))) + "</dd></div></dl>" +
     '<div class="bk-actions"><button class="btn small" data-act="revList">One at a time</button></div></div>';
   if (!rows.length) return h + '<div class="bk-none" style="background:var(--sheet);border:1px solid var(--rule);border-radius:10px">Nothing waiting. Upload bills above.</div></div>';
-  h = busyTop + h;
+  h = busyTop + docsBusyCard() + h;
   h += '<div class="revfilter"><input type="search" id="revq" data-fk="revq" value="' + esc(S.revQuery || "") + '" placeholder="Filter by supplier, bill no., GSTIN, ledger, payment type or amount" aria-label="Filter the bills">' +
     (S.revQuery && !revColOn() ? '<span class="note">' + rows.length + " of " + all.length + " shown</span>" : "") + "</div>" + colChipBar("rev", rows.length, all.length + " bills");
   h += '<div class="bk-tablewrap"><table class="bk-table revtbl"><thead><tr><th class="ck"><input type="checkbox" data-revall' + (nSel && nSel === rows.length ? " checked" : "") + '></th>' + colHead("rev", "date", "Date", "dt") + colHead("rev", "sup", "Supplier") + colHead("rev", "no", "Bill no.") + colHead("rev", "val", "Value", "n") + colHead("rev", "nature", "Payment type") + colHead("rev", "tds", "TDS", "ck") + '<th class="n">TDS</th>' + colHead("rev", "look", "This year vs limit") + '<th class="ac"></th></tr></thead><tbody>';
@@ -5457,6 +5494,7 @@ function viewDocsSettings(){
   }
   if (on){
     h += '<div class="row" style="gap:8px;margin-top:6px"><button class="btn small" data-act="docUsage">' + (u ? "Refresh" : "How much is stored?") + "</button>" +
+      (S.coId && S.companies[S.coId] ? '<button class="btn small" data-act="docSendPending">Send documents still on this computer for ' + esc(S.companies[S.coId].name) + "</button>" : "") +
       (owner && years ? '<button class="btn small" data-act="docTidy">Clear out documents older than ' + years + " year" + (years === 1 ? "" : "s") + "</button>" : "") + "</div>";
     if (u) h += '<p class="note">' + u.files + " document" + (u.files === 1 ? "" : "s") + " \u00b7 " + (u.bytes > 1073741824 ? (u.bytes / 1073741824).toFixed(2) + " GB" : Math.round(u.bytes / 1048576) + " MB") +
       (u.oldest ? " \u00b7 oldest " + fmtDate(String(u.oldest).slice(0, 10)) : "") + ". The plan includes 100 GB.</p>";
@@ -5518,7 +5556,7 @@ function viewInvoices(){
       '</span><span class="m">' + readBadge(e.readMode) + " " + esc([e.x.invoiceNo, e.x.invoiceDate ? fmtDate(e.x.invoiceDate) : ""].filter(Boolean).join(", ") || e.fileName) + '</span><span class="t">' + tag + "</span></button></li>";
   }).join("");
   const emptyMsg = S.filter === "draft" ? "No drafts for " + co.name + ". Upload invoices above." : S.filter === "approved" ? "Nothing approved yet." : S.filter === "duplicate" ? "No duplicates held." : "Nothing marked as no entry.";
-  return billsBusyCard() + docqPanel(S.coId) + '<div class="desk"><div>' +
+  return billsBusyCard() + docsBusyCard() + docqPanel(S.coId) + '<div class="desk"><div>' +
 
     (Object.values(d.entries).filter(e => e.status === "draft").length > 1 ? '<div class="row" style="margin:8px 0 0"><button class="btn small" data-act="revTable">Review all ' + Object.values(d.entries).filter(e => e.status === "draft").length + ' in a table</button></div>' : "") +
     '<div class="filters">' + f("draft", "To review") + f("approved", "Approved") + f("rejected", "No entry") + (cnt("duplicate") || S.filter === "duplicate" ? f("duplicate", "Duplicates") : "") + "</div>" +
@@ -12424,6 +12462,7 @@ document.addEventListener("click", ev => {
     case "tallyGuide": S.tallyPanel = false; S.view = "home"; S.homeTab = "tally"; render(); window.scrollTo(0, 0); break;
     case "firmMenu": S.firmMenu = !S.firmMenu; S.tallyPanel = false; render(); break;
     case "firmMenuClose": S.firmMenu = false; render(); break;
+    case "docSendPending": if (S.coId) CloudDocs.sendPending(S.coId); break;
     case "docUsage": Cloud.rpc("doc_usage").then(u => { S.docUsage = u || null; render(); }, e => toast(e.message)); break;
     case "docTidy": {
       const years = num(S.firm.docYears || 3);
