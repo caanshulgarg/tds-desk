@@ -751,7 +751,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "23 Sep 2026 · build 97 (uploaded files are kept, so documents open from Transactions)";
+const APP_VERSION = "23 Sep 2026 · build 98 (documents kept in the firm account: shrunk, uploaded in the background, opened anywhere)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -883,16 +883,18 @@ const FileStore = {
     try { await IDBStore.write([[this.key(cid, id), {name: file.name, type: file.type, at: new Date().toISOString(), blob: file}]]); S.fileIndex && S.fileIndex.add(id); return true; }
     catch (e){ return false; }
   },
-  async get(cid, id){
+  async get(cid, id, cloudPath, name){
     if (S.files[id]) return S.files[id];
-    if (S.storeKind !== "idb") return null;
-    try {
-      const rec = await IDBStore.get(this.key(cid, id));
-      if (!rec || !rec.blob) return null;
-      const f = new File([rec.blob], rec.name || "document", {type: rec.type || "application/octet-stream"});
-      S.files[id] = f;
-      return f;
-    } catch (e){ return null; }
+    if (S.storeKind === "idb"){
+      try {
+        const rec = await IDBStore.get(this.key(cid, id));
+        if (rec && rec.blob){ const f = new File([rec.blob], rec.name || "document", {type: rec.type || "application/octet-stream"}); S.files[id] = f; return f; }
+      } catch (e){}
+    }
+    if (cloudPath && CloudDocs.on()){
+      try { const f = await CloudDocs.fetchFile(cloudPath, name); S.files[id] = f; FileStore.put(cid, id, f); return f; } catch (e){ return null; }
+    }
+    return null;
   },
   async index(cid){
     S.fileIndex = new Set(Object.keys(S.files));
@@ -902,6 +904,111 @@ const FileStore = {
   },
   async drop(cid, id){ if (S.storeKind === "idb"){ try { await IDBStore.write([[this.key(cid, id), null]]); } catch (e){} } S.fileIndex && S.fileIndex.delete(id); delete S.files[id]; }
 };
+/* ================================================================== */
+/* Documents in the firm account: shrunk, uploaded in the background, */
+/* opened from any computer, and cleared out after the kept period.   */
+/* ================================================================== */
+const CloudDocs = {
+  queue: [], busy: false, max: 24 * 1024 * 1024,
+  on(){ return !!(Cloud.on() && S.account && S.firm.cloudDocs !== false); },
+  path(cid, id, name){
+    const safe = String(name || "document").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
+    return Cloud.st.firm + "/" + cid + "/" + id + "-" + safe;
+  },
+  // a phone photo of a bill is shrunk to reading size before it goes up
+  async shrink(file){
+    if (!isImage(file) || file.size < 400 * 1024) return file;
+    try {
+      const c = await imageToCanvas(file);
+      const k = Math.min(1, 1800 / Math.max(c.width, c.height));
+      const out = k < 1 ? cropCanvas(c, 0, 0, c.width, c.height) : c;
+      if (k < 1){
+        const cv = document.createElement("canvas");
+        cv.width = Math.round(c.width * k); cv.height = Math.round(c.height * k);
+        cv.getContext("2d").drawImage(c, 0, 0, cv.width, cv.height);
+        const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.82));
+        if (blob && blob.size < file.size) return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", {type: "image/jpeg"});
+      }
+      const blob = await new Promise(res => (out.toBlob ? out : c).toBlob(res, "image/jpeg", 0.82));
+      return blob && blob.size < file.size ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", {type: "image/jpeg"}) : file;
+    } catch (e){ return file; }
+  },
+  add(cid, id, file, kind){
+    if (!this.on() || !file || file.size > this.max) return;
+    this.queue.push({cid, id, file, kind, tries: 0});
+    if (!this.busy) setTimeout(() => this.run(), 300);        // after the reading, never in its way
+  },
+  async run(){
+    if (this.busy) return;
+    this.busy = true;
+    while (this.queue.length){
+      const job = this.queue[0];
+      try {
+        const small = await this.shrink(job.file);
+        const path = this.path(job.cid, job.id, small.name);
+        const c = Cloud.cfg(), s = Cloud.sess();
+        const url = c.url.replace(/\/+$/, "") + "/storage/v1/object/client-docs/" + path.split("/").map(encodeURIComponent).join("/");
+        let r = await fetch(url, {method: "POST", headers: {apikey: c.key, Authorization: "Bearer " + s.access_token, "x-upsert": "true", "Content-Type": small.type || "application/octet-stream"}, body: small});
+        if (r.status === 401){ await Cloud.refreshToken(); r = await fetch(url, {method: "POST", headers: {apikey: c.key, Authorization: "Bearer " + Cloud.sess().access_token, "x-upsert": "true", "Content-Type": small.type || "application/octet-stream"}, body: small}); }
+        if (!r.ok) throw new Error("upload " + r.status);
+        this.note(job, path, small.size);
+        this.queue.shift();
+      } catch (e){
+        job.tries++;
+        if (job.tries >= 3){ this.queue.shift(); }            // it stays on this computer; nothing is lost
+        else await new Promise(res => setTimeout(res, 4000));
+      }
+    }
+    this.busy = false;
+  },
+  // remember where it went, on the record itself, so any computer can open it
+  note(job, path, size){
+    if (job.kind === "bill"){
+      const e = (S.data[job.cid] || {entries: {}}).entries[job.id];
+      if (e){ e.docPath = path; e.docSize = size; Store.saveEntry(job.cid, e); }
+    } else if (job.kind === "sale"){
+      const s = SL();
+      const v = s && s.cid === job.cid ? s.list.find(x => "sv:" + x.id === job.id) : null;
+      if (v){ v.docPath = path; v.docSize = size; saveSales(); }
+    } else if (job.kind === "stmt"){
+      const b = S.bank, id = job.id.replace(/^st:/, "");
+      const st = b && b.cid === job.cid ? (b.stmts || []).find(x => x.id === id) : null;
+      if (st){ st.docPath = path; st.docSize = size; saveBank({stmts: true}); }
+    }
+  },
+  async fetchFile(path, name){
+    const c = Cloud.cfg(), s = Cloud.sess();
+    const url = c.url.replace(/\/+$/, "") + "/storage/v1/object/client-docs/" + path.split("/").map(encodeURIComponent).join("/");
+    let r = await fetch(url, {headers: {apikey: c.key, Authorization: "Bearer " + s.access_token}});
+    if (r.status === 401){ await Cloud.refreshToken(); r = await fetch(url, {headers: {apikey: c.key, Authorization: "Bearer " + Cloud.sess().access_token}}); }
+    if (!r.ok) throw {code: "doc_missing", message: "the document could not be fetched (" + r.status + ")"};
+    const blob = await r.blob();
+    return new File([blob], name || path.split("-").slice(1).join("-") || "document", {type: blob.type || "application/octet-stream"});
+  },
+  async remove(path){
+    if (!path || !this.on()) return;
+    try {
+      const c = Cloud.cfg(), s = Cloud.sess();
+      await fetch(c.url.replace(/\/+$/, "") + "/storage/v1/object/client-docs/" + path.split("/").map(encodeURIComponent).join("/"),
+        {method: "DELETE", headers: {apikey: c.key, Authorization: "Bearer " + s.access_token}});
+    } catch (e){}
+  },
+  // documents older than the period the firm keeps
+  async oldOnes(years){
+    const cut = new Date(); cut.setFullYear(cut.getFullYear() - num(years || 3));
+    const out = [];
+    Object.values(S.companies).forEach(co => {
+      const d = S.data[co.id];
+      if (!d || !d.loaded) return;
+      Object.values(d.entries).forEach(e => {
+        const when = e.x.invoiceDate || (e.createdAt || "").slice(0, 10);
+        if (e.docPath && when && when < cut.toISOString().slice(0, 10)) out.push({cid: co.id, id: e.id, path: e.docPath, when, what: (e.x.vendorName || e.fileName || "")});
+      });
+    });
+    return out;
+  }
+};
+
 const Store = {
   db:null, chains:{}, lsTimer:null,
   async init(){
@@ -3863,7 +3970,7 @@ async function runJob(j){
       e.uncertain = Array.from(new Set((e.uncertain || []).concat(pr.missing)));
       e.readError = "Free reading found part of this bill. Fill in the fields marked in amber (" + err.detail + "), or add a Google OCR or Claude key in Settings.";
       e.fileHash = j.hash;
-      S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; FileStore.put(j.cid || j.target || S.coId, e.id, j.file); FileStore.put(cid, e.id, j.file);
+      S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; const dcid = j.cid || j.target || S.coId; FileStore.put(dcid, e.id, j.file); CloudDocs.add(dcid, e.id, j.file, "bill"); FileStore.put(cid, e.id, j.file);
       setPreview(e.id, pr.preview);
       j.method = "free-partial";
       finishNewEntry(e, cid, j);
@@ -3922,7 +4029,7 @@ async function runJob(j){
   if (r.note) e.readNote = r.note;
   e.fileHash = j.hash;
   if (how) e.routedBy = how;
-  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; FileStore.put(j.cid || j.target || S.coId, e.id, j.file);
+  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; const dcid = j.cid || j.target || S.coId; FileStore.put(dcid, e.id, j.file); CloudDocs.add(dcid, e.id, j.file, "bill");
   setPreview(e.id, r.preview);
   finishNewEntry(e, cid, j);
 }
@@ -4013,7 +4120,7 @@ function typeItIn(j){
   if (!cid){ toast("Open the client first, then use Type it in."); return; }
   const e = newEntry(j.name);
   e.fileHash = j.hash; e.readError = j.msg;
-  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; FileStore.put(j.cid || j.target || S.coId, e.id, j.file);
+  S.files[e.id] = j.file; if (j.page) S.filePages[e.id] = [].concat(j.page)[0]; const dcid = j.cid || j.target || S.coId; FileStore.put(dcid, e.id, j.file); CloudDocs.add(dcid, e.id, j.file, "bill");
   if (isImage(j.file)) S.previews[e.id] = URL.createObjectURL(j.file);
   finishNewEntry(e, cid, null);
   j.status = "typed"; j.cid = cid; j.entryId = e.id;
@@ -4263,7 +4370,8 @@ function rereadButtons(e){
     '<button class="btn small" data-reread="claude" data-rid="' + e.id + '"' + (claudeReady() ? "" : " disabled title=\"Claude is not available here\"") + ">Claude</button></div>";
 }
 function removeEntry(e){
-  FileStore.drop(S.coId, e.id); delete D().entries[e.id]; Store.deleteEntry(S.coId, e.id); unregisterHash(S.coId, e.fileHash); delete S.files[e.id]; if (S.selected === e.id) S.selected = null; toast("Invoice deleted."); refreshStats(S.coId); render(); }
+  FileStore.drop(S.coId, e.id);
+  if (e.docPath) CloudDocs.remove(e.docPath); delete D().entries[e.id]; Store.deleteEntry(S.coId, e.id); unregisterHash(S.coId, e.fileHash); delete S.files[e.id]; if (S.selected === e.id) S.selected = null; toast("Invoice deleted."); refreshStats(S.coId); render(); }
 
 /* Summary kept on each client so the client list needs no extra loading */
 function refreshStats(cid){
@@ -4678,7 +4786,7 @@ function txnRowsBills(){
     const [cls, label] = tallyStateOf(e);
     return {id: e.id, kind: "bill", date: x.invoiceDate || "", up: (e.createdAt || "").slice(0, 10), vch: vchTypeOf(e, co), no: x.invoiceNo || "",
       party: x.vendorName || e.fileName || "", taxable: num(x.taxable), gst, total: num(x.total), cls, label,
-      file: e.fileName || "", hasFile: !!(S.files[e.id] || (S.fileIndex && S.fileIndex.has(e.id))), e};
+      file: e.fileName || "", docPath: e.docPath || "", hasFile: !!(S.files[e.id] || e.docPath || (S.fileIndex && S.fileIndex.has(e.id))), e};
   }).sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.up).localeCompare(String(a.up)));
 }
 function txnRowsSales(){
@@ -4689,7 +4797,7 @@ function txnRowsSales(){
     const cls = v.status === "posted" ? "ok" : v.status === "ready" ? "warn" : v.status === "ignored" ? "no" : "no";
     const label = v.status === "posted" ? "In Tally" : v.status === "ready" ? "Ready to post" : v.status === "ignored" ? "Set aside" : "To review";
     return {id: v.id, kind: "sale", date: x.date || "", up: (v.addedAt || "").slice(0, 10), vch: x.noteKind === "credit" ? "Credit Note" : x.noteKind === "debit" ? "Debit Note" : (s.cfg.voucherType || "Sales"),
-      no: x.number || "", party: x.customerName || "", taxable: num(x.taxable), gst, total: num(x.total), cls, label, file: v.fileName || "", hasFile: !!(S.files["sv:" + v.id] || (S.fileIndex && S.fileIndex.has("sv:" + v.id))), v};
+      no: x.number || "", party: x.customerName || "", taxable: num(x.taxable), gst, total: num(x.total), cls, label, file: v.fileName || "", docPath: v.docPath || "", hasFile: !!(S.files["sv:" + v.id] || v.docPath || (S.fileIndex && S.fileIndex.has("sv:" + v.id))), v};
   }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 function txnRowsBank(){
@@ -4703,7 +4811,7 @@ function txnRowsBank(){
     const label = r.state === "sent" ? "In Tally" : r.state === "intally" ? "Already in Tally" : r.state === "ready" ? "Ready to post" : r.state === "ignored" ? "Left out" : "To review";
     return {id: r.id, kind: "bank", date: r.date, up: (st.uploadedAt || "").slice(0, 10), vch: r.credit ? (CO().receiptType || "Receipt") : (CO().paymentType || "Payment"),
       no: (r.dec && (r.dec.utr || r.dec.chq)) || "", party: (r.dec && r.dec.name) || r.narr.slice(0, 40), taxable: 0, gst: 0,
-      total: num(r.debit) || num(r.credit), dr: num(r.debit), cr: num(r.credit), cls, label, file: st.fileName || "", hasFile: !!(S.files["st:" + st.id] || (S.fileIndex && S.fileIndex.has("st:" + st.id))), stId: st.id, r};
+      total: num(r.debit) || num(r.credit), dr: num(r.debit), cr: num(r.credit), cls, label, file: st.fileName || "", docPath: st.docPath || "", hasFile: !!(S.files["st:" + st.id] || st.docPath || (S.fileIndex && S.fileIndex.has("st:" + st.id))), stId: st.id, r};
   }).sort((a, b2) => String(b2.date).localeCompare(String(a.date)));
 }
 function txnF(){ S.txnF = S.txnF || {}; S.txnF[txnTab()] = S.txnF[txnTab()] || {}; return S.txnF[txnTab()]; }
@@ -4756,7 +4864,7 @@ function viewTransactions(){
     "<td>" + esc(r.vch) + "</td><td>" + esc(r.no || "\u2014") + "</td><td>" + esc(r.party) + "</td>" +
     (tab === "bank" ? '<td class="n">' + money(r.dr) + '</td><td class="n">' + money(r.cr) + "</td>" : '<td class="n">' + money(r.taxable) + '</td><td class="n">' + money(r.gst) + "</td>") +
     '<td class="n">' + money(r.total) + '</td><td><span class="tag ' + r.cls + '">' + esc(r.label) + "</span></td>" +
-    "<td>" + (r.file ? (r.hasFile ? '<button class="linkbtn" data-txnopen="' + (r.kind === "bank" ? "st:" + r.stId : r.kind === "sale" ? "sv:" + r.id : r.id) + '" title="Open ' + esc(r.file) + '">\ud83d\udcce ' + esc(r.file.slice(0, 20)) + "</button>" : '<span class="note" title="The file is not on this computer">' + esc(r.file.slice(0, 20)) + "</span>") : "\u2014") + "</td>" +
+    "<td>" + (r.file ? (r.hasFile ? '<button class="linkbtn" data-txnopen="' + (r.kind === "bank" ? "st:" + r.stId : r.kind === "sale" ? "sv:" + r.id : r.id) + '" data-txnpath="' + esc(r.docPath || "") + '" data-txnname="' + esc(r.file) + '" title="Open ' + esc(r.file) + '">\ud83d\udcce ' + esc(r.file.slice(0, 20)) + "</button>" : '<span class="note" title="The file is not on this computer">' + esc(r.file.slice(0, 20)) + "</span>") : "\u2014") + "</td>" +
     '<td class="ac"><button class="btn small" data-txngo="' + r.id + '" data-txnkind="' + r.kind + '">Open</button></td></tr>').join("");
   h += "</tbody></table>" + (rows.length ? "" : ((S.txnQ || S.txnStatus || txnColOn()) ? noMatchNote("txn") : '<div class="bk-none">Nothing here yet.</div>')) + "</div>";
   return h;
@@ -5334,6 +5442,27 @@ function docqPanel(cid){
     }).join("") + "</tbody></table></div></section>";
 }
 /* ---------- drop keys: how the agent is allowed to send files in ---------- */
+// Documents in the firm account: switched on or off, how long they are kept, and what is held
+function viewDocsSettings(){
+  if (!Cloud.on()) return "";
+  const a = S.account, owner = a && ((a.me || {}).role === "owner" || a.superadmin);
+  const on = S.firm.cloudDocs !== false, years = num(S.firm.docYears || 3);
+  const u = S.docUsage;
+  let h = '<h3 style="margin:16px 0 6px;font-size:15px">Documents in the firm account</h3>' +
+    '<p class="note" style="margin:0 0 8px">Bills, sales invoices and bank statements are kept with the firm, so anyone in the firm can open them from Transactions on any computer. Photos are shrunk to reading size first, and nothing is kept for a bill marked \u201cno entry\u201d or held as a duplicate.</p>' +
+    '<label class="chk"><input type="checkbox" data-act-toggle="cloudDocs"' + (on ? " checked" : "") + "> Keep documents in the firm account</label>";
+  if (on && owner){
+    h += '<label class="f" style="max-width:280px"><span>Keep them for</span><select data-firmset="docYears">' +
+      [1, 3, 5, 7, 0].map(y => '<option value="' + y + '"' + (years === y ? " selected" : "") + ">" + (y ? y + " year" + (y === 1 ? "" : "s") : "as long as the client is here") + "</option>").join("") + "</select></label>";
+  }
+  if (on){
+    h += '<div class="row" style="gap:8px;margin-top:6px"><button class="btn small" data-act="docUsage">' + (u ? "Refresh" : "How much is stored?") + "</button>" +
+      (owner && years ? '<button class="btn small" data-act="docTidy">Clear out documents older than ' + years + " year" + (years === 1 ? "" : "s") + "</button>" : "") + "</div>";
+    if (u) h += '<p class="note">' + u.files + " document" + (u.files === 1 ? "" : "s") + " \u00b7 " + (u.bytes > 1073741824 ? (u.bytes / 1073741824).toFixed(2) + " GB" : Math.round(u.bytes / 1048576) + " MB") +
+      (u.oldest ? " \u00b7 oldest " + fmtDate(String(u.oldest).slice(0, 10)) : "") + ". The plan includes 100 GB.</p>";
+  }
+  return h;
+}
 function viewDropKeys(){
   if (!Cloud.on()) return "";
   const a = S.account, owner = a && ((a.me || {}).role === "owner" || a.superadmin);
@@ -7493,7 +7622,7 @@ async function uploadStatements(files, force){
       suggestAll(rows);
       matchTallyBook(acc, rows);
       st.counts = countStates(rows);
-      S.files["st:" + sid] = file; FileStore.put(b.cid, "st:" + sid, file);   // kept, so pages can be read again later
+      S.files["st:" + sid] = file; FileStore.put(b.cid, "st:" + sid, file); CloudDocs.add(b.cid, "st:" + sid, file, "stmt");
       await BankDB.set("stmt:" + b.cid + ":" + sid, rows);
       saveBank({stmts: true, keys: true});
       b.filter = "review";
@@ -7526,7 +7655,7 @@ async function fileStatementFor(owner, file, hash, parsed, chk, meta, last4){
     opening: meta.opening, closing: meta.closing, n: rows.length, dupRows, badRows: chk.bad, fixedRows: chk.fixed, summaryOk: chk.summaryOk,
     totDr: chk.totDr, totCr: chk.totCr, source: parsed.source, method: parsed.method || "", uploadedAt: new Date().toISOString(), counts: {attention: rows.length}};
   stmts.push(st);
-  S.files["st:" + sid] = file; FileStore.put(cid, "st:" + sid, file);      // kept, so pages can be read again later
+  S.files["st:" + sid] = file; FileStore.put(cid, "st:" + sid, file); CloudDocs.add(cid, "st:" + sid, file, "stmt");
   await BankDB.set("stmt:" + cid + ":" + sid, rows);
   await Promise.all([BankDB.set("stmts:" + cid, stmts), BankDB.set("keys:" + cid, keys)]);
   toast(file.name + " is for " + owner.name + " (account \u00b7\u00b7" + last4 + "), so it was filed there.");
@@ -10221,7 +10350,7 @@ async function uploadSales(files){
       const twin = no && s.list.find(v => normInv(v.x.number) === no && (!v.x.date || !r.x.date || v.x.date === r.x.date));
       if (twin){ toast("Invoice " + r.x.number + " is already in Sales; not added again."); continue; }
       const v = newInvoice(r.x, "upload", {hash, fileName: file.name + (it.pages ? " \u00b7 page" + (it.pages.length > 1 ? "s " + it.pages[0] + "\u2013" + it.pages[it.pages.length - 1] : " " + it.pages[0]) : ""), method: r.method, trace: r.trace});
-      S.files["sv:" + v.id] = file; FileStore.put(cid, "sv:" + v.id, file);
+      S.files["sv:" + v.id] = file; FileStore.put(cid, "sv:" + v.id, file); CloudDocs.add(cid, "sv:" + v.id, file, "sale");
       s.list.push(v);
       mapInvoice(v);
       added++;
@@ -11489,7 +11618,7 @@ function walletHtml(){
 function viewAccountPeopleOnly(){
   const a = S.account;
   if (!a) return "";
-  return '<div class="pane">' + viewPeople((a.me || {}).role === "owner" || a.superadmin === true) + viewDropKeys() + viewBackups() + "</div>";
+  return '<div class="pane">' + viewPeople((a.me || {}).role === "owner" || a.superadmin === true) + viewDocsSettings() + viewDropKeys() + viewBackups() + "</div>";
 }
 function viewBackups(){
   if (!Cloud.on()) return "";
@@ -12059,9 +12188,10 @@ document.addEventListener("click", ev => {
   }
   if (t.dataset.txnopen){
     const id = t.dataset.txnopen;
-    FileStore.get(S.coId, id).then(f => {
+    toast("Opening the document\u2026");
+    FileStore.get(S.coId, id, t.dataset.txnpath || "", t.dataset.txnname || "").then(f => {
       if (f) window.open(URL.createObjectURL(f), "_blank");
-      else toast("That file is not on this computer. It was uploaded from another computer, or before files were kept.");
+      else toast("That document could not be found on this computer or in the firm account.");
     });
     return;
   }
@@ -12294,6 +12424,27 @@ document.addEventListener("click", ev => {
     case "tallyGuide": S.tallyPanel = false; S.view = "home"; S.homeTab = "tally"; render(); window.scrollTo(0, 0); break;
     case "firmMenu": S.firmMenu = !S.firmMenu; S.tallyPanel = false; render(); break;
     case "firmMenuClose": S.firmMenu = false; render(); break;
+    case "docUsage": Cloud.rpc("doc_usage").then(u => { S.docUsage = u || null; render(); }, e => toast(e.message)); break;
+    case "docTidy": {
+      const years = num(S.firm.docYears || 3);
+      CloudDocs.oldOnes(years).then(list => {
+        if (!list.length){ toast("No documents are older than " + years + " year" + (years === 1 ? "" : "s") + " among the clients open on this computer."); return; }
+        askConfirm({title: "Clear out " + list.length + " document" + (list.length === 1 ? "" : "s") + "?", ok: "Clear them out", danger: true,
+          body: '<p class="note">Documents older than ' + years + " year" + (years === 1 ? "" : "s") + " are removed from the firm account. The bills themselves, and everything posted to Tally, stay. Download them first if you need to keep them.</p>" +
+            '<p class="note">Oldest: ' + esc(fmtDate(list[0].when)) + " \u00b7 " + esc(list[0].what) + "</p>"}).then(async ok => {
+          if (!ok) return;
+          let n = 0;
+          for (const it of list){
+            await CloudDocs.remove(it.path);
+            const e = (S.data[it.cid] || {entries: {}}).entries[it.id];
+            if (e){ delete e.docPath; delete e.docSize; Store.saveEntry(it.cid, e); }
+            n++;
+          }
+          S.docUsage = null; toast(n + " document" + (n === 1 ? "" : "s") + " cleared out."); render();
+        });
+      });
+      break;
+    }
     case "vchAuto": setAutoNumbering(); break;
     case "vchTallyDone": { const co = CO(); co.vchNumbering = "tally"; co.vchAutoAt = new Date().toISOString(); Store.saveCompany(co); toast("TDS Desk will leave voucher numbers to Tally."); render(); break; }
     case "vchUseBillNo": { const co = CO(); co.vchNumbering = ""; Store.saveCompany(co); toast("TDS Desk will send the supplier\u2019s bill number as the voucher number."); render(); break; }
@@ -12356,7 +12507,7 @@ document.addEventListener("click", ev => {
       S.billCheck = null; refreshStats(S.coId); toast(ids.length + " bills are waiting to be posted again."); render(); break;
     }
     case "bridgeDiag": Bridge.diagnose().then(() => Bridge.refresh()).then(() => render()); break;
-    case "openSettings": S.settingsTab = S.settingsTab || null; closeSwitcher(); S.view = "home"; S.homeTab = "rules"; S.arm = null; render(); window.scrollTo(0, 0); break;
+    case "openSettings": S.settingsTab = S.settingsTab || null; S.firmMenu = false; S.tallyPanel = false; closeSwitcher(); S.view = "home"; S.homeTab = "rules"; S.arm = null; render(); window.scrollTo(0, 0); break;
     case "dlStandalone": downloadStandalone(); break;
     case "goReading": closeSwitcher(); S.view = "home"; S.homeTab = "rules"; render(); { const r = document.getElementById("readingPane"); if (r && r.scrollIntoView) r.scrollIntoView(); } break;
     case "testReader": testReader(); break;
@@ -12387,7 +12538,7 @@ document.addEventListener("click", ev => {
     case "camera": pickMode = "company"; document.getElementById("camIn").click(); break;
     case "manual": { const n = newEntry("Manual entry"); D().entries[n.id] = n; S.selected = n.id; S.filter = "draft"; Store.saveEntry(S.coId, n); refreshStats(S.coId); render(); break; }
     case "approve": if (e) approve(e); break;
-    case "reject": if (e) setStatus(e, "rejected", "Marked as no entry needed."); break;
+    case "reject": if (e){ if (e.docPath){ CloudDocs.remove(e.docPath); delete e.docPath; } setStatus(e, "rejected", "Marked as no entry needed."); } break;
     case "restore": if (e) setStatus(e, "draft"); break;
     case "undo": if (e) undoApproval(e); break;
     case "delete": if (e) removeEntry(e); break;
@@ -12517,6 +12668,8 @@ document.addEventListener("change", ev => {
   if (S.view === "company" && S.tab === "sales" && salesChange(t)) return;
   if (t.dataset.actToggle === "askClaudeNew"){ S.askClaudeNewSupplier = t.checked; lsSet("tdsdesk:askClaudeNew", t.checked ? "1" : ""); render(); return; }
   if (t.dataset.actToggle === "freeFirst"){ S.freeFirst = t.checked; lsSet("tdsdesk:freeFirst", t.checked ? "1" : "0"); render(); return; }
+  if (t.dataset.actToggle === "cloudDocs"){ S.firm.cloudDocs = t.checked; Store.saveFirm(); toast(t.checked ? "Documents will be kept in the firm account." : "Documents stay on this computer only."); render(); return; }
+  if (t.dataset && t.dataset.firmset === "docYears"){ S.firm.docYears = num(t.value); Store.saveFirm(); render(); return; }
   if (t.dataset.actToggle === "splitPdf"){ S.splitPdf = t.checked; lsSet("tdsdesk:splitPdf", t.checked ? "1" : ""); return; }
   if (t.id === "fileIn" || t.id === "camIn"){ const files = Array.from(t.files || []); t.value = ""; handleFiles(files, pickMode); return; }
   if (t.dataset.assign){ assignInbox(t.dataset.assign, t.value); return; }
