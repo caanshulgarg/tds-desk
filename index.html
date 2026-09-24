@@ -359,20 +359,20 @@ th.n .colh{flex-direction:row-reverse}
 .colf.on{color:#fff;background:var(--ledger);border-color:var(--ledger)}
 .colf.open{border-color:var(--ledger);color:var(--ledger);background:var(--ledger-soft)}
 .colf.on.open{color:#fff;background:var(--ledger)}
-.colpop{position:fixed;z-index:60;width:300px;max-width:calc(100vw - 24px);background:var(--sheet);border:1px solid var(--rule);border-radius:12px;box-shadow:0 12px 32px rgba(15,25,20,.18),0 2px 6px rgba(15,25,20,.08);font-size:13.5px}
+.colpop{position:fixed;z-index:60;width:252px;max-width:calc(100vw - 24px);background:var(--sheet);border:1px solid var(--rule);border-radius:12px;box-shadow:0 12px 32px rgba(15,25,20,.18),0 2px 6px rgba(15,25,20,.08);font-size:13.5px}
 .cp-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px 6px}
-.cp-head b{font-size:13.5px}
-.cp-body{padding:4px 12px 10px;max-height:340px;overflow:auto}
+.cp-head b{font-size:13px}
+.cp-body{padding:4px 12px 10px;max-height:300px;overflow:auto}
 .cp-foot{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--rule-soft)}
 .cp-foot span{flex:1}
 .cp-row{display:flex;gap:6px}
 .cp-row select{width:120px;flex-shrink:0}
-.colpop input[type="text"],.colpop input[type="search"],.colpop input[type="number"],.colpop input[type="date"],.colpop select{height:32px;border:1px solid var(--rule);border-radius:7px;padding:0 8px;font:inherit;font-size:13.5px;background:var(--sheet);color:var(--ink);box-sizing:border-box;width:100%}
+.colpop input[type="text"],.colpop input[type="search"],.colpop input[type="number"],.colpop input[type="date"],.colpop select{height:29px;border:1px solid var(--rule);border-radius:7px;padding:0 8px;font:inherit;font-size:13.5px;background:var(--sheet);color:var(--ink);box-sizing:border-box;width:100%}
 .cp-full{margin-bottom:6px}
-.cp-sub{margin:10px 0 6px;color:var(--muted);font-size:12.5px}
+.cp-sub{margin:8px 0 5px;color:var(--muted);font-size:12.5px}
 .cp-search{margin-bottom:6px}
-.cp-list{display:flex;flex-direction:column;max-height:190px;overflow:auto;border:1px solid var(--rule-soft);border-radius:8px;padding:4px}
-.cp-item{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;cursor:pointer}
+.cp-list{display:flex;flex-direction:column;max-height:150px;overflow:auto;border:1px solid var(--rule-soft);border-radius:8px;padding:4px}
+.cp-item{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;cursor:pointer}
 .cp-item:hover{background:var(--paper)}
 .cp-item span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cp-item small{color:var(--muted);font-variant-numeric:tabular-nums}
@@ -380,7 +380,7 @@ th.n .colh{flex-direction:row-reverse}
 .cp-radios{display:flex;flex-direction:column}
 .cp-range{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .cp-range label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12.5px}
-.cp-auto{display:flex;align-items:center;gap:8px;padding:8px 14px 12px;border-top:1px solid var(--rule-soft);color:var(--muted);font-size:12.5px;cursor:pointer}
+.cp-auto{display:flex;align-items:center;gap:8px;padding:6px 12px 9px;border-top:1px solid var(--rule-soft);color:var(--muted);font-size:12.5px;cursor:pointer}
 .cp-auto input{accent-color:var(--ledger);width:15px;height:15px;margin:0}
 .cp-quick{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .cp-chip{border:1px solid var(--rule);background:var(--paper);border-radius:14px;padding:5px 10px;font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink)}
@@ -400,11 +400,11 @@ th.n .colh{flex-direction:row-reverse}
 .fchip-l{border:0;background:transparent;padding:5px 4px 5px 10px;font:inherit;font-size:12.5px;color:var(--ledger);cursor:pointer}
 .fchip-x{border:0;background:transparent;padding:5px 9px 5px 4px;font-size:11px;color:var(--ledger);cursor:pointer}
 .fchip-x:hover{color:var(--stop)}
-#colpop .cp-head{padding:12px 14px 6px}
-#colpop .cp-body{padding:4px 14px 12px}
-#colpop .cp-foot{padding:10px 14px}
+#colpop .cp-head{padding:9px 12px 4px}
+#colpop .cp-body{padding:2px 12px 10px}
+#colpop .cp-foot{padding:8px 12px}
 #colpop .cp-row{display:flex;gap:6px;align-items:center}
-#colpop .cp-row select{flex:0 0 118px;width:118px}
+#colpop .cp-row select{flex:0 0 96px;width:96px}
 #colpop .cp-row input{flex:1 1 auto;min-width:0;width:auto}
 .bk-table thead tr.bk-frow th{background:var(--paper);padding:6px 6px 8px;vertical-align:top;font-weight:400;text-transform:none;letter-spacing:0;border-bottom:1px solid var(--rule)}
 .bk-frow input,.bk-frow select{display:block;width:100%;box-sizing:border-box;height:28px;margin:0 0 4px;border:1px solid var(--rule);border-radius:6px;padding:0 6px;font:inherit;font-size:12.5px;background:var(--sheet);color:var(--ink)}
@@ -751,7 +751,7 @@ const DEFAULT_FIRM = {firmName:"Garg Shekhar & Company", rules:{}};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/;
 const DB_LIMIT = 5000;
-const APP_VERSION = "23 Sep 2026 · build 99 (you can see where each document is, and send up the ones left behind)";
+const APP_VERSION = "24 Sep 2026 · build 100 (the filter panel sits under its column and covers less of the table)";
 const GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function gstinCheckChar(g){
   let sum = 0;
@@ -8511,9 +8511,18 @@ function placeColPop(){
   const pop = document.getElementById("colpop"); if (!pop || !S.colPop) return;
   const btn = document.querySelector('.colf[data-colf="' + S.colPop.k + '"][data-colt="' + S.colPop.t + '"]');
   if (!btn){ pop.style.display = "none"; return; }
-  const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
-  let left = Math.min(window.innerWidth - w - 12, Math.max(12, r.left - 12)), top = r.bottom + 6;
-  if (top + h > window.innerHeight - 12) top = Math.max(12, r.top - h - 6);
+  const th = btn.closest("th") || btn, cell = th.getBoundingClientRect(), r = btn.getBoundingClientRect();
+  const body = pop.querySelector(".cp-body"), foot = pop.querySelector(".cp-foot"), head = pop.querySelector(".cp-head"), auto = pop.querySelector(".cp-auto");
+  const chrome = (head ? head.offsetHeight : 0) + (foot ? foot.offsetHeight : 0) + (auto ? auto.offsetHeight : 0) + 8;
+  const below = window.innerHeight - cell.bottom - 20, above = cell.top - 20;
+  const down = below >= 260 || below >= above;                      // downwards when there is room, as a spreadsheet does
+  if (body) body.style.maxHeight = Math.max(150, Math.min(360, (down ? below : above) - chrome)) + "px";
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  // under the column, aligned to its left edge; to its right edge when that would run off the screen
+  let left = cell.left;
+  if (left + w > window.innerWidth - 12) left = Math.max(12, cell.right - w);
+  left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
+  const top = down ? Math.min(cell.bottom + 4, window.innerHeight - h - 12) : Math.max(12, cell.top - h - 4);
   pop.style.left = left + "px"; pop.style.top = top + "px";
   const lst = pop.querySelector(".cp-list"); if (lst && S.colPop.scroll) lst.scrollTop = S.colPop.scroll;
   if (S.colPop.justOpened){
